@@ -1,0 +1,277 @@
+// import 'dart:io';
+
+// import 'package:couple_expenses/services/gpt_parser.dart';
+// import 'package:flutter/material.dart';
+// import 'package:image_picker/image_picker.dart';
+// import 'package:cloud_firestore/cloud_firestore.dart';
+// import 'package:intl/intl.dart';
+// import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+
+// class ReceiptScannerScreen extends StatefulWidget {
+//   const ReceiptScannerScreen({super.key});
+
+//   @override
+//   State<ReceiptScannerScreen> createState() => _ReceiptScannerScreenState();
+// }
+
+// class _ReceiptScannerScreenState extends State<ReceiptScannerScreen> {
+//   List<Map<String, dynamic>> items = [];
+//   String category = '';
+//   String dateOfPurchase = DateFormat('yyyy/MM/dd hh:mm a').format(DateTime.now());
+//   List<File> scannedImages = [];
+// double tax = 0.0;
+// double serviceCharge = 0.0;
+// double total = 0.0;
+//   bool isProcessing = false;
+//   final picker = ImagePicker();
+
+//   Future<void> scanImageFromSource(ImageSource source) async {
+//     setState(() {
+//       isProcessing = true;
+//       items.clear();
+//       scannedImages.clear();
+//     });
+
+//     try {
+//       final pickedImage = await picker.pickImage(source: source);
+//       if (pickedImage == null) {
+//         setState(() => isProcessing = false);
+//         return;
+//       }
+
+//       final imageFile = File(pickedImage.path);
+//       scannedImages.add(imageFile);
+
+//       final inputImage = InputImage.fromFile(imageFile);
+//       final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
+//       final recognizedText = await textRecognizer.processImage(inputImage);
+//       final rawText = recognizedText.text;
+//       await textRecognizer.close();
+
+//       if (rawText.isEmpty) {
+//         throw Exception('No text could be extracted from the image. Please try another image.');
+//       }
+
+//       final structured = await GptParser.extractStructuredData(rawText);
+
+//       if (structured == null || structured.isEmpty) {
+//         throw Exception('Could not extract structured data from the receipt. Please try again or manually enter details.');
+//       }
+
+//   setState(() {
+//   final itemList = structured['items'];
+//   items = [];
+
+//   if (itemList is List) {
+//     for (var item in itemList) {
+//       final name = item['name'] ?? '';
+//       final priceStr = item['price'].toString().replaceAll(RegExp(r'[^0-9.]'), '');
+//       final price = double.tryParse(priceStr) ?? 0.0;
+//       final category = item['category'] ?? 'Other';
+
+//       items.add({
+//         'name': name,
+//         'price': price,
+//         'suggestedCategory': category,
+//       });
+//     }
+//   }
+
+//   dateOfPurchase = structured['date_of_purchase'] ?? dateOfPurchase;
+//   tax = structured['tax']?.toDouble() ?? 0.0;
+//   serviceCharge = structured['service_charge']?.toDouble() ?? 0.0;
+//   total = structured['total']?.toDouble() ?? 0.0;
+
+//   isProcessing = false;
+// });
+
+//       print('✅ Parsed from GPT: $structured');
+//     } catch (e) {
+//       print('❌ Error during scan: $e');
+//       setState(() {
+//         isProcessing = false;
+//       });
+//       showDialog(
+//         context: context,
+//         builder: (_) => AlertDialog(
+//           title: const Text('Error'),
+//           content: Text(e.toString()),
+//           actions: [
+//             TextButton(
+//               onPressed: () => Navigator.pop(context),
+//               child: const Text('OK'),
+//             )
+//           ],
+//         ),
+//       );
+//     }
+//   }
+
+//   void addNewItemField() {
+//     setState(() {
+//       items.add({"name": "", "price": 0.0});
+//     });
+//   }
+
+//   void removeItemField(int index) {
+//     setState(() {
+//       items.removeAt(index);
+//     });
+//   }
+
+//   bool isValid() {
+//     for (var item in items) {
+//       if ((item['name'] as String).trim().isEmpty || item['price'] == null) {
+//         return false;
+//       }
+//     }
+//     return true;
+//   }
+
+//   Future<void> saveToFirestore() async {
+//     if (!isValid()) {
+//       ScaffoldMessenger.of(context).showSnackBar(
+//         const SnackBar(content: Text("Please fill in all item names and prices.")),
+//       );
+//       return;
+//     }
+
+//   final receiptData = {
+//   'item_name': items.map((e) => e['name']).toList(),
+//   'unit_price': items.map((e) => e['price']).toList(),
+//   'category': getDominantCategory(),
+//   'date_of_purchase': dateOfPurchase,
+//   'tax': tax,
+//   'service_charge': serviceCharge,
+//   'total': total,
+//   'timestamp': FieldValue.serverTimestamp(),
+// };
+
+
+//     await FirebaseFirestore.instance.collection('receipts').add(receiptData);
+//     Navigator.pop(context);
+//   }
+
+// Widget confidenceMessage() {
+//   if (items.isEmpty) return const SizedBox();
+
+//   final itemTotal = items.fold<double>(0.0, (sum, item) => sum + (item['price'] ?? 0.0));
+
+//   return Padding(
+//     padding: const EdgeInsets.symmetric(vertical: 12.0),
+//     child: Column(
+//       crossAxisAlignment: CrossAxisAlignment.start,
+//       children: [
+//         Text(
+//           "We detected ${items.length} items, subtotal \$${itemTotal.toStringAsFixed(2)}.",
+//           style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+//         ),
+//         if (tax > 0) Text("Tax: \$${tax.toStringAsFixed(2)}"),
+//         if (serviceCharge > 0) Text("Service Charge: \$${serviceCharge.toStringAsFixed(2)}"),
+//         if (total > 0)
+//           Text(
+//             "Total from receipt: \$${total.toStringAsFixed(2)}",
+//             style: const TextStyle(fontWeight: FontWeight.bold),
+//           ),
+//       ],
+//     ),
+//   );
+// }
+
+// String getDominantCategory() {
+//   final categoryCounts = <String, int>{};
+//   for (var item in items) {
+//     final cat = item['suggestedCategory'] ?? 'Uncategorized';
+//     categoryCounts[cat] = (categoryCounts[cat] ?? 0) + 1;
+//   }
+//   categoryCounts.removeWhere((key, value) => key == 'Uncategorized');
+//   return categoryCounts.entries.isEmpty
+//       ? 'Uncategorized'
+//       : categoryCounts.entries.reduce((a, b) => a.value > b.value ? a : b).key;
+// }
+//   @override
+// Widget build(BuildContext context) {
+//   return Scaffold(
+//     appBar: AppBar(title: const Text("Scan Receipt")),
+//     body: Padding(
+//       padding: const EdgeInsets.all(16.0),
+//       child: isProcessing
+//           ? const Center(child: CircularProgressIndicator())
+//           : Column(
+//               children: [
+//                 Row(
+//                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+//                   children: [
+//                     ElevatedButton.icon(
+//                       icon: const Icon(Icons.camera_alt),
+//                       label: const Text("Camera"),
+//                       onPressed: () => scanImageFromSource(ImageSource.camera),
+//                     ),
+//                     ElevatedButton.icon(
+//                       icon: const Icon(Icons.image),
+//                       label: const Text("Gallery"),
+//                       onPressed: () => scanImageFromSource(ImageSource.gallery),
+//                     ),
+//                   ],
+//                 ),
+//                 const SizedBox(height: 16),
+//                 confidenceMessage(),
+//                 const SizedBox(height: 16),
+//                 Expanded(
+//                   child: ListView.builder(
+//                     itemCount: items.length,
+//                     itemBuilder: (context, index) {
+//                       return Padding(
+//                         padding: const EdgeInsets.symmetric(vertical: 4.0),
+//                         child: Row(
+//                           children: [
+//                             Expanded(
+//                               child: TextFormField(
+//                                 initialValue: items[index]['name'],
+//                                 decoration: const InputDecoration(labelText: 'Item Name'),
+//                                 onChanged: (val) => items[index]['name'] = val,
+//                               ),
+//                             ),
+//                             const SizedBox(width: 10),
+//                             Expanded(
+//                               child: TextFormField(
+//                                 initialValue: items[index]['price'].toString(),
+//                                 decoration: const InputDecoration(labelText: 'Price'),
+//                                 keyboardType:
+//                                     const TextInputType.numberWithOptions(decimal: true),
+//                                 onChanged: (val) =>
+//                                     items[index]['price'] = double.tryParse(val) ?? 0.0,
+//                               ),
+//                             ),
+//                             IconButton(
+//                               icon: const Icon(Icons.delete, color: Colors.red),
+//                               onPressed: () => removeItemField(index),
+//                             ),
+//                           ],
+//                         ),
+//                       );
+//                     },
+//                   ),
+//                 ),
+//                 Row(
+//                   children: [
+//                     ElevatedButton.icon(
+//                       icon: const Icon(Icons.add),
+//                       label: const Text("Add More?"),
+//                       onPressed: addNewItemField,
+//                     ),
+//                     const SizedBox(width: 10),
+//                     ElevatedButton.icon(
+//                       icon: const Icon(Icons.save),
+//                       label: const Text("Save"),
+//                       onPressed: saveToFirestore,
+//                     ),
+//                   ],
+//                 ),
+//               ],
+//             ),
+//     ),
+//   );
+// }
+// }
+
