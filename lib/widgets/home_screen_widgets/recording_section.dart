@@ -62,6 +62,7 @@ class _MicRecordingIndicatorState extends State<MicRecordingIndicator> with Sing
     String statusText = '';
     IconData icon = Icons.mic;
     Color iconColor = Colors.white;
+    
     Widget mainContent;
 
     if (widget.isRecording) {

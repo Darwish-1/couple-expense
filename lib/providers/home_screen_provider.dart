@@ -9,6 +9,7 @@ import 'package:couple_expenses/services/gpt_parser.dart';
 import 'package:firebase_auth/firebase_auth.dart' hide AuthProvider;
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:record/record.dart';
@@ -20,21 +21,29 @@ class HomeScreenProvider extends ChangeNotifier {
   String _transcription = '';
   String _searchQuery = '';
   bool _showWalletReceipts = false;
-  bool _showSuccessPopup = false; // New state variable
-  int _savedExpensesCount = 0;   // To display count in success message
+  bool _showSuccessPopup = false;
+  int _savedExpensesCount = 0;
   bool get isRecording => _isRecording;
   bool get isProcessing => _isProcessing;
-  bool get showSuccessPopup => _showSuccessPopup; // Getter for the new state
-  int get savedExpensesCount => _savedExpensesCount; // Getter for count
+  bool get showSuccessPopup => _showSuccessPopup;
+  int get savedExpensesCount => _savedExpensesCount;
   final TextEditingController _walletIdController = TextEditingController();
   List<DocumentSnapshot> _allDocs = [];
   StreamSubscription<QuerySnapshot>? _streamSubscription;
+
+  // Pagination related state
+  DocumentSnapshot? _lastDocument; // Stores the last document of the current fetch
+  bool _hasMore = true; // Indicates if there are more documents to load
+  bool _isLoadingMore = false; // Prevents multiple simultaneous fetch calls
+  final int _documentsPerPage = 20; // Number of documents to fetch per page
 
   String get transcription => _transcription;
   String get searchQuery => _searchQuery;
   bool get showWalletReceipts => _showWalletReceipts;
   TextEditingController get walletIdController => _walletIdController;
   List<DocumentSnapshot> get allDocs => _allDocs;
+  bool get hasMore => _hasMore; // Expose hasMore to the UI
+  bool get isLoadingMore => _isLoadingMore; // Expose isLoadingMore to the UI
 
   void initializeStream(BuildContext context, String userId) {
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
@@ -46,21 +55,19 @@ class HomeScreenProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // New methods to control success pop-up
   void showSuccess(int count) {
     _savedExpensesCount = count;
     _showSuccessPopup = true;
     notifyListeners();
-    // Automatically hide after a few seconds
     Future.delayed(const Duration(seconds: 3), () {
       hideSuccess();
     });
   }
 
   void hideSuccess() {
-    if (_showSuccessPopup) { // Only notify if it was actually shown
+    if (_showSuccessPopup) {
       _showSuccessPopup = false;
-      _savedExpensesCount = 0; // Reset count
+      _savedExpensesCount = 0;
       notifyListeners();
     }
   }
@@ -68,21 +75,32 @@ class HomeScreenProvider extends ChangeNotifier {
   void _setupStream(BuildContext context, String userId, String? walletId) {
     _streamSubscription?.cancel();
     _allDocs.clear();
+    _lastDocument = null; // Reset for a new stream
+    _hasMore = true; // Assume there's more data when a new stream starts
+    _isLoadingMore = false; // Reset loading state
 
-    Query<Map<String, dynamic>> query = _showWalletReceipts && walletId != null
-        ? FirebaseFirestore.instance
-            .collection('receipts')
-            .where('walletId', isEqualTo: walletId)
-            .orderBy('date_of_purchase', descending: true)
-            .limit(10)
-        : FirebaseFirestore.instance
-            .collection('receipts')
-            .where('userId', isEqualTo: userId)
-            .orderBy('date_of_purchase', descending: true)
-            .limit(10);
+    Query<Map<String, dynamic>> baseQuery;
 
-    _streamSubscription = query.snapshots().listen((snapshot) {
+    if (_showWalletReceipts && walletId != null) {
+      baseQuery = FirebaseFirestore.instance
+          .collection('receipts')
+          .where('walletId', isEqualTo: walletId)
+          .orderBy('created_at', descending: true); // Order by creation time
+    } else {
+      baseQuery = FirebaseFirestore.instance
+          .collection('receipts')
+          .where('userId', isEqualTo: userId)
+          .orderBy('created_at', descending: true); // Order by creation time
+    }
+
+    _streamSubscription = baseQuery.limit(_documentsPerPage).snapshots().listen((snapshot) {
       _allDocs = snapshot.docs;
+      if (snapshot.docs.isNotEmpty) {
+        _lastDocument = snapshot.docs.last;
+        _hasMore = snapshot.docs.length == _documentsPerPage;
+      } else {
+        _hasMore = false;
+      }
       notifyListeners();
     }, onError: (e) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -91,11 +109,57 @@ class HomeScreenProvider extends ChangeNotifier {
     });
   }
 
+  Future<void> loadMoreExpenses(BuildContext context, String userId) async {
+    if (!_hasMore || _isLoadingMore) return;
+
+    _isLoadingMore = true;
+    notifyListeners();
+
+    Query<Map<String, dynamic>> baseQuery;
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+
+    if (_showWalletReceipts && authProvider.walletId != null) {
+      baseQuery = FirebaseFirestore.instance
+          .collection('receipts')
+          .where('walletId', isEqualTo: authProvider.walletId)
+          .orderBy('created_at', descending: true); // Consistent ordering
+    } else {
+      baseQuery = FirebaseFirestore.instance
+          .collection('receipts')
+          .where('userId', isEqualTo: userId)
+          .orderBy('created_at', descending: true); // Consistent ordering
+    }
+
+    try {
+      final snapshot = await baseQuery
+          .startAfterDocument(_lastDocument!)
+          .limit(_documentsPerPage)
+          .get();
+
+      if (snapshot.docs.isNotEmpty) {
+        _allDocs.addAll(snapshot.docs);
+        _lastDocument = snapshot.docs.last;
+        _hasMore = snapshot.docs.length == _documentsPerPage;
+      } else {
+        _hasMore = false;
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error loading more data: $e')),
+      );
+    } finally {
+      _isLoadingMore = false;
+      notifyListeners();
+    }
+  }
+
   void removeDoc(String docId) {
     _allDocs.removeWhere((doc) => doc.id == docId);
     notifyListeners();
   }
 
+  // This method is no longer used for saving multiple items
+  // but keeping it in case you have single expense saves elsewhere.
   Future<void> saveToFirestore(Map<String, dynamic> expense, BuildContext context) async {
     try {
       await FirebaseFirestore.instance.collection('receipts').add(expense);
@@ -109,6 +173,7 @@ class HomeScreenProvider extends ChangeNotifier {
     }
   }
 
+  // MODIFIED: This method now saves grouped expenses based on category and date
   Future<void> saveMultipleToFirestore(List<Map<String, dynamic>> expenses, BuildContext context) async {
     if (expenses.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -117,19 +182,58 @@ class HomeScreenProvider extends ChangeNotifier {
       return;
     }
 
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    final userId = authProvider.user?.uid;
+    final walletId = authProvider.walletId;
+    final now = DateTime.now(); // Use a consistent timestamp for all grouped items from this session
+
+    // Group expenses by category and date_of_purchase
+    final Map<String, Map<String, dynamic>> groupedExpenses = {};
+
+    for (var expense in expenses) {
+      final parsedDate = GptParser.normalizeDate(expense['date_of_purchase']);
+      final category = expense['category'] ?? 'General';
+      final item_name = expense['item_name'];
+      final unit_price = (expense['unit_price'] as num?)?.toDouble();
+
+      if (item_name == null || unit_price == null) {
+        print('Skipping expense due to missing item_name or unit_price: $expense');
+        continue; // Skip if essential data is missing
+      }
+
+      // Create a unique key for grouping based on category and the normalized date (YYYY-MM-DD)
+      final String dateKey = parsedDate != null ? DateFormat('yyyy-MM-dd').format(parsedDate) : DateFormat('yyyy-MM-dd').format(now);
+      final String groupKey = '$category-$dateKey';
+
+      if (!groupedExpenses.containsKey(groupKey)) {
+        groupedExpenses[groupKey] = {
+          'item_name': [],
+          'unit_price': [],
+          'date_of_purchase': Timestamp.fromDate(parsedDate ?? now), // Use parsed date or current if null
+          'category': category,
+          'userId': userId,
+          'walletId': walletId,
+          'created_at': Timestamp.fromDate(now), // Timestamp for when this grouped entry was created
+        };
+      }
+      (groupedExpenses[groupKey]!['item_name'] as List).add(item_name);
+      (groupedExpenses[groupKey]!['unit_price'] as List).add(unit_price);
+    }
+
     final batch = FirebaseFirestore.instance.batch();
     try {
-      for (var expense in expenses) {
+      for (var entry in groupedExpenses.values) {
         final docRef = FirebaseFirestore.instance.collection('receipts').doc();
-        batch.set(docRef, expense);
+        batch.set(docRef, entry);
       }
       await batch.commit();
-      // Removed initializeStream call to prevent unnecessary refresh
-      showSuccess(expenses.length); // Call the new method
-      
+      showSuccess(groupedExpenses.length); // Show count of grouped entries
+      // Re-initialize the stream to reflect new data from the top
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      _setupStream(context, authProvider.user!.uid, authProvider.walletId);
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error saving multiple expenses: $e')),
+        SnackBar(content: Text('Error saving grouped expenses: $e')),
       );
     }
   }
@@ -212,33 +316,12 @@ class HomeScreenProvider extends ChangeNotifier {
 
   Future<void> _parseAndAddExpense(String transcription, BuildContext context) async {
     try {
-      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      // GPT will still return individual items
       final expenses = await GptParser.extractStructuredData(transcription);
 
-      if (expenses != null && expenses.isNotEmpty) {
-        final now = DateTime.now();
-        final formattedExpenses = expenses.map((expense) {
-          final parsedDate = GptParser.normalizeDate(expense['date_of_purchase']);
-          final timestamp = parsedDate != null
-              ? DateTime(parsedDate.year, parsedDate.month, parsedDate.day, now.hour, now.minute, now.second)
-              : now;
+      // Now, saveMultipleToFirestore will handle the grouping based on category and date
+      await saveMultipleToFirestore(expenses!, context);
 
-          return {
-            'item_name': expense['item_name'] ?? 'Unknown',
-            'unit_price': (expense['unit_price'] as num?)?.toDouble() ?? 0.0,
-            'date_of_purchase': timestamp,
-            'category': expense['category'] ?? 'General',
-            'userId': authProvider.user?.uid,
-            'walletId': authProvider.walletId,
-          };
-        }).toList();
-
-        await saveMultipleToFirestore(formattedExpenses, context);
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not extract expenses.')),
-        );
-      }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error parsing expenses: $e')),
@@ -298,26 +381,22 @@ class HomeScreenProvider extends ChangeNotifier {
     final query = searchQuery.toLowerCase();
     if (query.isEmpty) return true;
 
-    final itemName = data['item_name'];
+    final itemNames = data['item_name']; // This is now always a List
     final category = data['category']?.toString().toLowerCase() ?? '';
     final date = data['date_of_purchase']?.toString().toLowerCase() ?? '';
 
-    if (itemName is List && itemName.any((item) => item.toString().toLowerCase().contains(query))) return true;
-    if (itemName is String && itemName.toLowerCase().contains(query)) return true;
+    // Check if any item name in the list matches
+    if (itemNames is List && itemNames.any((item) => item.toString().toLowerCase().contains(query))) return true;
 
     return category.contains(query) || date.contains(query);
   }
 
   static double calculateReceiptTotal(Map<String, dynamic> data) {
-    final prices = data['unit_price'];
+    final prices = data['unit_price']; // This is now always a List
     if (prices is List) {
       return prices.fold(0.0, (sum, price) => sum + (price is num ? price.toDouble() : 0.0));
-    } else if (prices is num) {
-      return prices.toDouble();
-    } else if (prices is String) {
-      return double.tryParse(prices.replaceAll(RegExp(r'[^0-9.]'), '')) ?? 0.0;
     }
-    return 0.0;
+    return 0.0; // Should not happen if data is structured as expected
   }
 
   @override

@@ -203,7 +203,7 @@ class __HomeScreenContentState extends State<_HomeScreenContent> {
           ),
         ],
       ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
       floatingActionButton: Selector<HomeScreenProvider, ({bool isRecording, bool isProcessing})>(
         selector: (_, provider) => (
           isRecording: provider.isRecording,

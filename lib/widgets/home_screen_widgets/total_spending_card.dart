@@ -1,13 +1,32 @@
+// total_spending_card.dart (you need to update this file manually)
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:intl/intl.dart'; // Import this
 import 'package:couple_expenses/providers/auth_provider.dart'; // Make sure this path is correct
 import 'package:couple_expenses/providers/home_screen_provider.dart'; // Make sure this path is correct
 
-class TotalSpendingCard extends StatelessWidget {
-  final String userId;
+class TotalSpendingCard extends StatefulWidget { // Change to StatefulWidget if not already
+  final String userId; // Keep this if it's passed from home_screen.dart
 
   const TotalSpendingCard({super.key, required this.userId});
+
+  @override
+  State<TotalSpendingCard> createState() => _TotalSpendingCardState();
+}
+
+class _TotalSpendingCardState extends State<TotalSpendingCard> {
+  late NumberFormat _currencyFormatter; // Declare the formatter
+
+  @override
+  void initState() {
+    super.initState();
+    _currencyFormatter = NumberFormat.currency(
+      locale: 'en_US', // Or your desired locale
+      symbol: '\$',      // Explicit symbol
+      decimalDigits: 2,  // Always show 2 decimal places
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -26,7 +45,7 @@ class TotalSpendingCard extends StatelessWidget {
           } else {
             return FirebaseFirestore.instance
                 .collection('receipts')
-                .where('userId', isEqualTo: userId)
+                .where('userId', isEqualTo: widget.userId)
                 .snapshots();
           }
         }
@@ -71,7 +90,7 @@ class TotalSpendingCard extends StatelessWidget {
                             style: TextStyle(fontSize: 16, color: Colors.grey),
                           ),
                           Text(
-                            "\$${totalSpending.toStringAsFixed(2)}",
+                            _currencyFormatter.format(totalSpending), // Apply formatter
                             style: const TextStyle(
                               fontSize: 28,
                               fontWeight: FontWeight.bold,
