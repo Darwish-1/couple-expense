@@ -55,10 +55,21 @@ class _TransactionListState extends State<TransactionList> {
     }
   }
 
+  String _getInitials(String? name) {
+    if (name == null || name.isEmpty) return '?';
+    List<String> parts = name.split(' ');
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[1][0]).toUpperCase();
+    } else if (parts.isNotEmpty) {
+      return parts[0][0].toUpperCase();
+    }
+    return '?';
+  }
+
   @override
   Widget build(BuildContext context) {
     debugPrint('TransactionList build');
-    return Selector<HomeScreenProvider, ({List<DocumentSnapshot> allDocs, String searchQuery, bool isRecording, bool isProcessing, bool showSuccessPopup, int savedExpensesCount, bool isLoadingMore, bool hasMore, bool showWalletReceipts, bool isLoadingStream})>(
+    return Selector<HomeScreenProvider, ({List<DocumentSnapshot> allDocs, String searchQuery, bool isRecording, bool isProcessing, bool showSuccessPopup, int savedExpensesCount, bool isLoadingMore, bool hasMore, bool showWalletReceipts, bool isLoadingStream, String? selectedUserFilter})>(
       selector: (_, provider) => (
         allDocs: provider.allDocs,
         searchQuery: provider.searchQuery,
@@ -70,19 +81,37 @@ class _TransactionListState extends State<TransactionList> {
         hasMore: provider.hasMore,
         showWalletReceipts: provider.showWalletReceipts,
         isLoadingStream: provider.isLoadingStream,
+        selectedUserFilter: provider.selectedUserFilter,
       ),
       builder: (context, selectorData, _) {
         final authProvider = Provider.of<AuthProvider>(context, listen: false);
         final homeScreenProvider = Provider.of<HomeScreenProvider>(context, listen: false);
+        final currentUserId = authProvider.user?.uid;
 
         Widget mainContent;
 
         if (selectorData.showWalletReceipts && authProvider.walletId == null) {
           return Center(
-            child: Text(
-              "Join a wallet to view shared expenses.",
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 18, color: Colors.grey[600]),
+            child: Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.account_balance_wallet_outlined, size: 60, color: Colors.grey[400]),
+                  const SizedBox(height: 15),
+                  Text(
+                    "You haven't joined a wallet yet.",
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 18, color: Colors.grey[600], fontWeight: FontWeight.w500),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    "Join or create one to view shared expenses with your partner.",
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 14, color: Colors.grey[500]),
+                  ),
+                ],
+              ),
             ),
           );
         }
@@ -99,15 +128,40 @@ class _TransactionListState extends State<TransactionList> {
 
           if (docs.isEmpty) {
             mainContent = Center(
-              child: Text(
-                selectorData.searchQuery.isNotEmpty
-                    ? "No results found for '${selectorData.searchQuery}'."
-                    : "No expenses found. Tap the mic to add a new expense.",
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 18, color: Colors.grey[600]),
+              child: Padding(
+                padding: const EdgeInsets.all(20.0),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.receipt_long, size: 60, color: Colors.grey[400]),
+                    const SizedBox(height: 15),
+                    Text(
+                      selectorData.searchQuery.isEmpty
+                          ? (selectorData.selectedUserFilter == null
+                              ? "No expenses recorded."
+                              : "No expenses found for this user.")
+                          : "No expenses found for '${selectorData.searchQuery}'.",
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 18, color: Colors.grey[600], fontWeight: FontWeight.w500),
+                    ),
+                    if (selectorData.searchQuery.isEmpty && selectorData.selectedUserFilter == null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        "Tap the microphone button to add a new expense.",
+                        textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 14, color: Colors.grey[500]),
+                      ),
+                    ],
+                  ],
+                ),
               ),
             );
           } else {
+            final NumberFormat totalCurrencyFormatter = NumberFormat.currency(
+              locale: 'en_US',
+              symbol: 'EGP ',
+              decimalDigits: 2,
+            );
             mainContent = RefreshIndicator(
               onRefresh: () async {
                 homeScreenProvider.initializeStream(context, widget.userId);
@@ -133,12 +187,8 @@ class _TransactionListState extends State<TransactionList> {
                       : (data['date_of_purchase'] ?? 'Unknown Date');
                   final category = data['category'] ?? 'N/A';
                   final total = HomeScreenProvider.calculateReceiptTotal(data);
-
-                  final NumberFormat totalCurrencyFormatter = NumberFormat.currency(
-                    locale: 'en_US',
-                    symbol: 'EGP ',
-                    decimalDigits: 2,
-                  );
+                  final expenseUserId = data['userId'];
+                  final isMyExpense = currentUserId == expenseUserId;
 
                   String displayTitle = category;
                   if (itemNames.isNotEmpty && itemNames.length == 1) {
@@ -165,7 +215,7 @@ class _TransactionListState extends State<TransactionList> {
                       alignment: Alignment.centerRight,
                       padding: const EdgeInsets.symmetric(horizontal: 20),
                       decoration: BoxDecoration(
-                        color: Colors.red,
+                        color: Colors.red.shade600,
                         borderRadius: BorderRadius.circular(15),
                       ),
                       child: const Icon(Icons.delete, color: Colors.white, size: 30),
@@ -175,8 +225,8 @@ class _TransactionListState extends State<TransactionList> {
                         context: context,
                         builder: (dialogContext) => AlertDialog(
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-                          title: const Text('Delete Expense?'),
-                          content: const Text('Are you sure you want to delete this expense permanently?'),
+                          title: const Text('Delete Expense?', style: TextStyle(fontWeight: FontWeight.bold)),
+                          content: const Text('Are you sure you want to delete this expense permanently? This action cannot be undone.'),
                           actions: [
                             TextButton(
                               onPressed: () => Navigator.of(dialogContext).pop(false),
@@ -240,7 +290,7 @@ class _TransactionListState extends State<TransactionList> {
                                   Expanded(
                                     child: Text(
                                       displayTitle,
-                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: Colors.deepPurple),
                                       overflow: TextOverflow.ellipsis,
                                     ),
                                   ),
@@ -249,7 +299,7 @@ class _TransactionListState extends State<TransactionList> {
                                     style: const TextStyle(
                                       fontWeight: FontWeight.bold,
                                       fontSize: 18,
-                                      color: Colors.green,
+                                      color: Colors.teal,
                                     ),
                                   ),
                                 ],
@@ -270,13 +320,35 @@ class _TransactionListState extends State<TransactionList> {
                               ),
                               if (selectorData.showWalletReceipts) ...[
                                 const SizedBox(height: 8),
-                                FutureBuilder<String>(
-                                  future: homeScreenProvider.fetchUserDisplayName(data['userId'] ?? ''),
+                                FutureBuilder<String?>(
+                                  future: homeScreenProvider.fetchUserDisplayName(expenseUserId ?? ''),
                                   builder: (context, snapshot) {
-                                    final name = snapshot.data ?? 'Loading...';
-                                    return Text(
-                                      'By: $name',
-                                      style: TextStyle(fontSize: 14, color: Colors.grey[700]),
+                                    final name = snapshot.data;
+                                    final initials = _getInitials(name);
+                                    return Row(
+                                      children: [
+                                        CircleAvatar(
+                                          radius: 12,
+                                          backgroundColor: isMyExpense ? Colors.blue.shade100 : Colors.purple.shade100,
+                                          child: Text(
+                                            initials,
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.bold,
+                                              color: isMyExpense ? Colors.blue.shade800 : Colors.purple.shade800,
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          isMyExpense ? 'By: Me' : 'By: ${name ?? 'Unknown'}',
+                                          style: TextStyle(
+                                            fontSize: 14,
+                                            color: isMyExpense ? Colors.blue.shade700 : Colors.purple.shade700,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ],
                                     );
                                   },
                                 ),
@@ -285,7 +357,7 @@ class _TransactionListState extends State<TransactionList> {
                                 const SizedBox(height: 10),
                                 Text(
                                   itemListString,
-                                  style: const TextStyle(fontSize: 14),
+                                  style: TextStyle(fontSize: 14, color: Colors.grey[600]),
                                   maxLines: 2,
                                   overflow: TextOverflow.ellipsis,
                                 ),

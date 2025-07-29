@@ -62,7 +62,7 @@ class _MicRecordingIndicatorState extends State<MicRecordingIndicator> with Sing
     String statusText = '';
     IconData icon = Icons.mic;
     Color iconColor = Colors.white;
-    
+
     Widget mainContent;
 
     if (widget.isRecording) {
@@ -85,7 +85,7 @@ class _MicRecordingIndicatorState extends State<MicRecordingIndicator> with Sing
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
         decoration: BoxDecoration(
-          color: Colors.deepPurple.withOpacity(0.9),
+          color: Colors.deepPurple.withOpacity(0.8), // Slightly less opaque
           borderRadius: BorderRadius.circular(20),
           boxShadow: [
             BoxShadow(

@@ -12,10 +12,10 @@ class SuccessPopUp extends StatelessWidget {
       child: Material( // Use Material to apply elevation and shape
         color: Colors.transparent, // Make Material transparent
         child: Container(
-          padding: const EdgeInsets.all(10),
+          padding: const EdgeInsets.all(15), // Slightly more padding
           decoration: BoxDecoration(
-            color: Colors.green.withOpacity(0.9), // Green background
-            borderRadius: BorderRadius.circular(20),
+            color: Colors.green.withOpacity(0.85), // Slightly less opaque
+            borderRadius: BorderRadius.circular(25), // Larger border radius
             boxShadow: [
               BoxShadow(
                 color: Colors.black.withOpacity(0.2),
@@ -31,14 +31,23 @@ class SuccessPopUp extends StatelessWidget {
               const Icon(
                 Icons.check_circle_outline, // Tick icon
                 color: Colors.white,
-                size: 60,
+                size: 65, // Slightly larger icon
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 12), // More spacing
               Text(
-                'Successfully saved expense',
-                style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                'Expense Saved!', // Simpler text
+                style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
                 textAlign: TextAlign.center,
               ),
+              if (savedCount > 0)
+                Padding(
+                  padding: const EdgeInsets.only(top: 5.0),
+                  child: Text(
+                    '$savedCount pending expenses processed.', // More informative
+                    style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 14),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
             ],
           ),
         ),

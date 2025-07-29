@@ -117,7 +117,7 @@ class __HomeScreenContentState extends State<_HomeScreenContent> {
                   children: [
                     const Text(
                       "Track your expenses together.",
-                      style: TextStyle(fontSize: 16, color: Colors.grey),
+                      style: TextStyle(fontSize: 16, color: Colors.grey, fontStyle: FontStyle.italic),
                     ),
                     const SizedBox(height: 20),
                     const SearchAndToggleCard(),
@@ -132,17 +132,24 @@ class __HomeScreenContentState extends State<_HomeScreenContent> {
                             padding: const EdgeInsets.only(bottom: 20.0),
                             child: Card(
                               color: Colors.white,
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-                              elevation: 3,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                              elevation: 4,
                               child: Padding(
                                 padding: const EdgeInsets.all(16.0),
                                 child: Column(
                                   children: [
                                     const Text(
-                                      'No wallet joined',
-                                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.blue),
+                                      'No Wallet Joined!',
+                                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.redAccent),
+                                      textAlign: TextAlign.center,
                                     ),
                                     const SizedBox(height: 10),
+                                    const Text(
+                                      'Join or create a wallet to share expenses with your partner.',
+                                      style: TextStyle(fontSize: 14, color: Colors.grey),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                    const SizedBox(height: 15),
                                     SizedBox(
                                       width: double.infinity,
                                       child: ElevatedButton(
@@ -153,12 +160,13 @@ class __HomeScreenContentState extends State<_HomeScreenContent> {
                                           );
                                         },
                                         style: ElevatedButton.styleFrom(
-                                          backgroundColor: Colors.blue,
+                                          backgroundColor: Colors.blueAccent, // More vibrant color
                                           foregroundColor: Colors.white,
-                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                          padding: const EdgeInsets.symmetric(vertical: 15),
+                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+                                          padding: const EdgeInsets.symmetric(vertical: 16),
+                                          elevation: 5,
                                         ),
-                                        child: const Text('Join or Create Wallet', style: TextStyle(fontSize: 16)),
+                                        child: const Text('Join or Create Wallet', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
                                       ),
                                     ),
                                   ],
@@ -175,7 +183,7 @@ class __HomeScreenContentState extends State<_HomeScreenContent> {
               ),
               Expanded(
                 child: Container(
-                  color: Colors.white,
+                  color: Colors.white, // Background for the list section
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 8.0),
                     child: Column(
@@ -183,7 +191,7 @@ class __HomeScreenContentState extends State<_HomeScreenContent> {
                       children: [
                         const Text(
                           "Recent Expenses",
-                          style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                          style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.deepPurple),
                         ),
                         const SizedBox(height: 10),
                         Expanded(
@@ -208,9 +216,10 @@ class __HomeScreenContentState extends State<_HomeScreenContent> {
                       .stopRecordingAndProcess(context)
                   : () => Provider.of<HomeScreenProvider>(context, listen: false)
                       .startRecording(context),
-              backgroundColor: Colors.blue,
+              backgroundColor: Colors.blueAccent, // Consistent primary color
               foregroundColor: Colors.white,
-              elevation: 5,
+              elevation: 6,
+              shape: const CircleBorder(),
               child: Icon(data.isRecording ? Icons.stop : Icons.mic, size: 30),
             ),
           ),

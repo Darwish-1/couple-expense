@@ -28,7 +28,9 @@ class HomeScreenProvider extends ChangeNotifier {
   StreamSubscription<QuerySnapshot>? _streamSubscription;
   Map<String, List<DocumentSnapshot>> _queryCache = {};
   Map<String, String> _userNameCache = {};
+  Map<String, double> _totalByUser = {};
   String? _currentStreamKey;
+  String? _selectedUserFilter;
 
   DocumentSnapshot? _lastDocument;
   bool _hasMore = true;
@@ -48,10 +50,19 @@ class HomeScreenProvider extends ChangeNotifier {
   List<DocumentSnapshot> get allDocs => _allDocs;
   bool get hasMore => _hasMore;
   bool get isLoadingMore => _isLoadingMore;
+  String? get selectedUserFilter => _selectedUserFilter;
+  Map<String, double> get totalByUser => _totalByUser;
 
   void initializeStream(BuildContext context, String userId) {
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     _setupStream(context, userId, authProvider.walletId);
+  }
+
+  void setUserFilter(String? userId, BuildContext context) {
+    _selectedUserFilter = userId;
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    _setupStream(context, authProvider.user!.uid, authProvider.walletId);
+    notifyListeners();
   }
 
   void setIsProcessing(bool value) {
@@ -79,6 +90,7 @@ class HomeScreenProvider extends ChangeNotifier {
   void removeDoc(String docId) {
     _allDocs.removeWhere((doc) => doc.id == docId);
     _queryCache.updateAll((key, value) => value..removeWhere((doc) => doc.id == docId));
+    _totalByUser.clear(); // Clear totals to force recalculation
     notifyListeners();
   }
 
@@ -88,7 +100,6 @@ class HomeScreenProvider extends ChangeNotifier {
     }
 
     try {
-      // Check FirebaseAuth for the current user
       final currentUser = FirebaseAuth.instance.currentUser;
       if (currentUser != null && currentUser.uid == userId) {
         final name = currentUser.displayName ?? currentUser.email?.split('@').first ?? 'Unknown';
@@ -100,7 +111,6 @@ class HomeScreenProvider extends ChangeNotifier {
         return capitalizedFirstName;
       }
 
-      // Query Firestore for other users
       final userDoc = await FirebaseFirestore.instance.collection('users').doc(userId).get();
       final data = userDoc.data();
       String name;
@@ -125,7 +135,7 @@ class HomeScreenProvider extends ChangeNotifier {
   }
 
   void _setupStream(BuildContext context, String userId, String? walletId) async {
-    final newStreamKey = '${_showWalletReceipts}_$walletId';
+    final newStreamKey = '${_showWalletReceipts}_${walletId}_${_selectedUserFilter ?? "all"}';
     if (_currentStreamKey == newStreamKey && _streamSubscription != null) {
       return;
     }
@@ -139,6 +149,7 @@ class HomeScreenProvider extends ChangeNotifier {
       _hasMore = true;
       _isLoadingMore = false;
       _isLoadingStream = true;
+      _totalByUser.clear();
       notifyListeners();
 
       final cacheKey = newStreamKey;
@@ -147,6 +158,7 @@ class HomeScreenProvider extends ChangeNotifier {
         _lastDocument = _allDocs.isNotEmpty ? _allDocs.last : null;
         _hasMore = _allDocs.length == _documentsPerPage;
         _isLoadingStream = false;
+        _totalByUser = await _calculateTotalsByUser(_allDocs);
         notifyListeners();
         return;
       }
@@ -159,6 +171,9 @@ class HomeScreenProvider extends ChangeNotifier {
             .collection('receipts')
             .where('walletId', isEqualTo: walletId)
             .orderBy('created_at', descending: true);
+        if (_selectedUserFilter != null) {
+          baseQuery = baseQuery.where('userId', isEqualTo: _selectedUserFilter);
+        }
       } else {
         baseQuery = FirebaseFirestore.instance
             .collection('receipts')
@@ -166,15 +181,17 @@ class HomeScreenProvider extends ChangeNotifier {
             .orderBy('created_at', descending: true);
       }
 
-      _streamSubscription = baseQuery.limit(_documentsPerPage).snapshots().listen((snapshot) {
+      _streamSubscription = baseQuery.limit(_documentsPerPage).snapshots().listen((snapshot) async {
         _allDocs = snapshot.docs;
         if (snapshot.docs.isNotEmpty) {
           _lastDocument = snapshot.docs.last;
           _hasMore = snapshot.docs.length == _documentsPerPage;
           _queryCache[cacheKey] = List.from(_allDocs);
+          _totalByUser = await _calculateTotalsByUser(_allDocs);
         } else {
           _hasMore = false;
           _queryCache[cacheKey] = [];
+          _totalByUser.clear();
         }
         _isLoadingStream = false;
         notifyListeners();
@@ -185,6 +202,17 @@ class HomeScreenProvider extends ChangeNotifier {
         notifyListeners();
       });
     });
+  }
+
+  Future<Map<String, double>> _calculateTotalsByUser(List<DocumentSnapshot> docs) async {
+    final Map<String, double> totals = {};
+    for (var doc in docs) {
+      final data = doc.data() as Map<String, dynamic>;
+      final userId = data['userId'] as String? ?? 'Unknown';
+      final total = calculateReceiptTotal(data);
+      totals[userId] = (totals[userId] ?? 0.0) + total;
+    }
+    return totals;
   }
 
   Future<void> loadMoreExpenses(BuildContext context, String userId) async {
@@ -203,6 +231,9 @@ class HomeScreenProvider extends ChangeNotifier {
             .collection('receipts')
             .where('walletId', isEqualTo: authProvider.walletId)
             .orderBy('created_at', descending: true);
+        if (_selectedUserFilter != null) {
+          baseQuery = baseQuery.where('userId', isEqualTo: _selectedUserFilter);
+        }
       } else {
         baseQuery = FirebaseFirestore.instance
             .collection('receipts')
@@ -216,7 +247,8 @@ class HomeScreenProvider extends ChangeNotifier {
           _allDocs.addAll(snapshot.docs);
           _lastDocument = snapshot.docs.last;
           _hasMore = snapshot.docs.length == _documentsPerPage;
-          _queryCache['${_showWalletReceipts}_${authProvider.walletId}'] = List.from(_allDocs);
+          _queryCache['${_showWalletReceipts}_${authProvider.walletId}_${_selectedUserFilter ?? "all"}'] = List.from(_allDocs);
+          _totalByUser = await _calculateTotalsByUser(_allDocs);
         } else {
           _hasMore = false;
         }
@@ -373,6 +405,7 @@ class HomeScreenProvider extends ChangeNotifier {
   void toggleWalletReceipts(BuildContext context) {
     _showWalletReceipts = !_showWalletReceipts;
     _searchQuery = '';
+    _selectedUserFilter = null; // Reset filter when toggling
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     _setupStream(context, authProvider.user!.uid, authProvider.walletId);
     notifyListeners();
@@ -441,6 +474,7 @@ class HomeScreenProvider extends ChangeNotifier {
     _streamSubscription?.cancel();
     _queryCache.clear();
     _userNameCache.clear();
+    _totalByUser.clear();
     super.dispose();
   }
 }
