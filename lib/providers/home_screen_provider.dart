@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -18,32 +17,37 @@ class HomeScreenProvider extends ChangeNotifier {
   AudioRecorder? _recorder;
   bool _isRecording = false;
   bool _isProcessing = false;
+  bool _isLoadingStream = false;
   String _transcription = '';
   String _searchQuery = '';
   bool _showWalletReceipts = false;
   bool _showSuccessPopup = false;
   int _savedExpensesCount = 0;
-  bool get isRecording => _isRecording;
-  bool get isProcessing => _isProcessing;
-  bool get showSuccessPopup => _showSuccessPopup;
-  int get savedExpensesCount => _savedExpensesCount;
   final TextEditingController _walletIdController = TextEditingController();
   List<DocumentSnapshot> _allDocs = [];
   StreamSubscription<QuerySnapshot>? _streamSubscription;
+  Map<String, List<DocumentSnapshot>> _queryCache = {};
+  Map<String, String> _userNameCache = {};
+  String? _currentStreamKey;
 
-  // Pagination related state
-  DocumentSnapshot? _lastDocument; // Stores the last document of the current fetch
-  bool _hasMore = true; // Indicates if there are more documents to load
-  bool _isLoadingMore = false; // Prevents multiple simultaneous fetch calls
-  final int _documentsPerPage = 20; // Number of documents to fetch per page
+  DocumentSnapshot? _lastDocument;
+  bool _hasMore = true;
+  bool _isLoadingMore = false;
+  Timer? _debounceTimer;
+  final int _documentsPerPage = 20;
 
+  bool get isRecording => _isRecording;
+  bool get isProcessing => _isProcessing;
+  bool get isLoadingStream => _isLoadingStream;
+  bool get showSuccessPopup => _showSuccessPopup;
+  int get savedExpensesCount => _savedExpensesCount;
   String get transcription => _transcription;
   String get searchQuery => _searchQuery;
   bool get showWalletReceipts => _showWalletReceipts;
   TextEditingController get walletIdController => _walletIdController;
   List<DocumentSnapshot> get allDocs => _allDocs;
-  bool get hasMore => _hasMore; // Expose hasMore to the UI
-  bool get isLoadingMore => _isLoadingMore; // Expose isLoadingMore to the UI
+  bool get hasMore => _hasMore;
+  bool get isLoadingMore => _isLoadingMore;
 
   void initializeStream(BuildContext context, String userId) {
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
@@ -72,122 +76,171 @@ class HomeScreenProvider extends ChangeNotifier {
     }
   }
 
-  void _setupStream(BuildContext context, String userId, String? walletId) {
-    _streamSubscription?.cancel();
-    _allDocs.clear();
-    _lastDocument = null; // Reset for a new stream
-    _hasMore = true; // Assume there's more data when a new stream starts
-    _isLoadingMore = false; // Reset loading state
+  void removeDoc(String docId) {
+    _allDocs.removeWhere((doc) => doc.id == docId);
+    _queryCache.updateAll((key, value) => value..removeWhere((doc) => doc.id == docId));
+    notifyListeners();
+  }
 
-    Query<Map<String, dynamic>> baseQuery;
-
-    if (_showWalletReceipts && walletId != null) {
-      baseQuery = FirebaseFirestore.instance
-          .collection('receipts')
-          .where('walletId', isEqualTo: walletId)
-          .orderBy('created_at', descending: true); // Order by creation time
-    } else {
-      baseQuery = FirebaseFirestore.instance
-          .collection('receipts')
-          .where('userId', isEqualTo: userId)
-          .orderBy('created_at', descending: true); // Order by creation time
+  Future<String> fetchUserDisplayName(String userId) async {
+    if (_userNameCache.containsKey(userId)) {
+      return _userNameCache[userId]!;
     }
 
-    _streamSubscription = baseQuery.limit(_documentsPerPage).snapshots().listen((snapshot) {
-      _allDocs = snapshot.docs;
-      if (snapshot.docs.isNotEmpty) {
-        _lastDocument = snapshot.docs.last;
-        _hasMore = snapshot.docs.length == _documentsPerPage;
-      } else {
-        _hasMore = false;
+    try {
+      // Check FirebaseAuth for the current user
+      final currentUser = FirebaseAuth.instance.currentUser;
+      if (currentUser != null && currentUser.uid == userId) {
+        final name = currentUser.displayName ?? currentUser.email?.split('@').first ?? 'Unknown';
+        final firstName = name.split(' ').first.trim();
+        final capitalizedFirstName = firstName.isEmpty
+            ? 'Unknown'
+            : '${firstName[0].toUpperCase()}${firstName.substring(1).toLowerCase()}';
+        _userNameCache[userId] = capitalizedFirstName;
+        return capitalizedFirstName;
       }
+
+      // Query Firestore for other users
+      final userDoc = await FirebaseFirestore.instance.collection('users').doc(userId).get();
+      final data = userDoc.data();
+      String name;
+      if (data != null && data.containsKey('name') && data['name'] != null) {
+        name = data['name'] as String;
+      } else if (data != null && data.containsKey('email') && data['email'] != null) {
+        name = (data['email'] as String).split('@').first;
+      } else {
+        name = 'Unknown';
+      }
+      final firstName = name.split(' ').first.trim();
+      final capitalizedFirstName = firstName.isEmpty
+          ? 'Unknown'
+          : '${firstName[0].toUpperCase()}${firstName.substring(1).toLowerCase()}';
+      _userNameCache[userId] = capitalizedFirstName;
+      return capitalizedFirstName;
+    } catch (e) {
+      debugPrint('Fetch user name error for $userId: $e');
+      _userNameCache[userId] = 'Unknown';
+      return 'Unknown';
+    }
+  }
+
+  void _setupStream(BuildContext context, String userId, String? walletId) async {
+    final newStreamKey = '${_showWalletReceipts}_$walletId';
+    if (_currentStreamKey == newStreamKey && _streamSubscription != null) {
+      return;
+    }
+
+    _debounceTimer?.cancel();
+    _debounceTimer = Timer(const Duration(milliseconds: 300), () async {
+      _streamSubscription?.cancel();
+      _currentStreamKey = newStreamKey;
+      _allDocs.clear();
+      _lastDocument = null;
+      _hasMore = true;
+      _isLoadingMore = false;
+      _isLoadingStream = true;
       notifyListeners();
-    }, onError: (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error fetching data: $e')),
-      );
+
+      final cacheKey = newStreamKey;
+      if (_queryCache.containsKey(cacheKey) && _queryCache[cacheKey]!.isNotEmpty) {
+        _allDocs = _queryCache[cacheKey]!;
+        _lastDocument = _allDocs.isNotEmpty ? _allDocs.last : null;
+        _hasMore = _allDocs.length == _documentsPerPage;
+        _isLoadingStream = false;
+        notifyListeners();
+        return;
+      }
+
+      await Future.delayed(const Duration(milliseconds: 50));
+      Query<Map<String, dynamic>> baseQuery;
+
+      if (_showWalletReceipts && walletId != null) {
+        baseQuery = FirebaseFirestore.instance
+            .collection('receipts')
+            .where('walletId', isEqualTo: walletId)
+            .orderBy('created_at', descending: true);
+      } else {
+        baseQuery = FirebaseFirestore.instance
+            .collection('receipts')
+            .where('userId', isEqualTo: userId)
+            .orderBy('created_at', descending: true);
+      }
+
+      _streamSubscription = baseQuery.limit(_documentsPerPage).snapshots().listen((snapshot) {
+        _allDocs = snapshot.docs;
+        if (snapshot.docs.isNotEmpty) {
+          _lastDocument = snapshot.docs.last;
+          _hasMore = snapshot.docs.length == _documentsPerPage;
+          _queryCache[cacheKey] = List.from(_allDocs);
+        } else {
+          _hasMore = false;
+          _queryCache[cacheKey] = [];
+        }
+        _isLoadingStream = false;
+        notifyListeners();
+      }, onError: (e) {
+        _isLoadingStream = false;
+        Provider.of<AuthProvider>(context, listen: false).showError(context);
+        debugPrint('Stream error: $e');
+        notifyListeners();
+      });
     });
   }
 
   Future<void> loadMoreExpenses(BuildContext context, String userId) async {
     if (!_hasMore || _isLoadingMore) return;
 
-    _isLoadingMore = true;
-    notifyListeners();
-
-    Query<Map<String, dynamic>> baseQuery;
-    final authProvider = Provider.of<AuthProvider>(context, listen: false);
-
-    if (_showWalletReceipts && authProvider.walletId != null) {
-      baseQuery = FirebaseFirestore.instance
-          .collection('receipts')
-          .where('walletId', isEqualTo: authProvider.walletId)
-          .orderBy('created_at', descending: true); // Consistent ordering
-    } else {
-      baseQuery = FirebaseFirestore.instance
-          .collection('receipts')
-          .where('userId', isEqualTo: userId)
-          .orderBy('created_at', descending: true); // Consistent ordering
-    }
-
-    try {
-      final snapshot = await baseQuery
-          .startAfterDocument(_lastDocument!)
-          .limit(_documentsPerPage)
-          .get();
-
-      if (snapshot.docs.isNotEmpty) {
-        _allDocs.addAll(snapshot.docs);
-        _lastDocument = snapshot.docs.last;
-        _hasMore = snapshot.docs.length == _documentsPerPage;
-      } else {
-        _hasMore = false;
-      }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error loading more data: $e')),
-      );
-    } finally {
-      _isLoadingMore = false;
+    _debounceTimer?.cancel();
+    _debounceTimer = Timer(const Duration(milliseconds: 300), () async {
+      _isLoadingMore = true;
       notifyListeners();
-    }
+
+      Query<Map<String, dynamic>> baseQuery;
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+
+      if (_showWalletReceipts && authProvider.walletId != null) {
+        baseQuery = FirebaseFirestore.instance
+            .collection('receipts')
+            .where('walletId', isEqualTo: authProvider.walletId)
+            .orderBy('created_at', descending: true);
+      } else {
+        baseQuery = FirebaseFirestore.instance
+            .collection('receipts')
+            .where('userId', isEqualTo: userId)
+            .orderBy('created_at', descending: true);
+      }
+
+      try {
+        final snapshot = await baseQuery.startAfterDocument(_lastDocument!).limit(_documentsPerPage).get();
+        if (snapshot.docs.isNotEmpty) {
+          _allDocs.addAll(snapshot.docs);
+          _lastDocument = snapshot.docs.last;
+          _hasMore = snapshot.docs.length == _documentsPerPage;
+          _queryCache['${_showWalletReceipts}_${authProvider.walletId}'] = List.from(_allDocs);
+        } else {
+          _hasMore = false;
+        }
+      } catch (e) {
+        Provider.of<AuthProvider>(context, listen: false).showError(context);
+        debugPrint('Load more error: $e');
+      } finally {
+        _isLoadingMore = false;
+        notifyListeners();
+      }
+    });
   }
 
-  void removeDoc(String docId) {
-    _allDocs.removeWhere((doc) => doc.id == docId);
-    notifyListeners();
-  }
-
-  // This method is no longer used for saving multiple items
-  // but keeping it in case you have single expense saves elsewhere.
-  Future<void> saveToFirestore(Map<String, dynamic> expense, BuildContext context) async {
-    try {
-      await FirebaseFirestore.instance.collection('receipts').add(expense);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Expense "${expense['item_name']}" saved successfully')),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error saving "${expense['item_name']}": $e')),
-      );
-    }
-  }
-
-  // MODIFIED: This method now saves grouped expenses based on category and date
   Future<void> saveMultipleToFirestore(List<Map<String, dynamic>> expenses, BuildContext context) async {
     if (expenses.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No expenses extracted. Please try again.')),
-      );
+      Provider.of<AuthProvider>(context, listen: false).showError(context);
       return;
     }
 
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     final userId = authProvider.user?.uid;
     final walletId = authProvider.walletId;
-    final now = DateTime.now(); // Use a consistent timestamp for all grouped items from this session
+    final now = DateTime.now();
 
-    // Group expenses by category and date_of_purchase
     final Map<String, Map<String, dynamic>> groupedExpenses = {};
 
     for (var expense in expenses) {
@@ -197,11 +250,10 @@ class HomeScreenProvider extends ChangeNotifier {
       final unit_price = (expense['unit_price'] as num?)?.toDouble();
 
       if (item_name == null || unit_price == null) {
-        print('Skipping expense due to missing item_name or unit_price: $expense');
-        continue; // Skip if essential data is missing
+        debugPrint('Skipping expense due to missing item_name or unit_price: $expense');
+        continue;
       }
 
-      // Create a unique key for grouping based on category and the normalized date (YYYY-MM-DD)
       final String dateKey = parsedDate != null ? DateFormat('yyyy-MM-dd').format(parsedDate) : DateFormat('yyyy-MM-dd').format(now);
       final String groupKey = '$category-$dateKey';
 
@@ -209,11 +261,11 @@ class HomeScreenProvider extends ChangeNotifier {
         groupedExpenses[groupKey] = {
           'item_name': [],
           'unit_price': [],
-          'date_of_purchase': Timestamp.fromDate(parsedDate ?? now), // Use parsed date or current if null
+          'date_of_purchase': Timestamp.fromDate(parsedDate ?? now),
           'category': category,
           'userId': userId,
           'walletId': walletId,
-          'created_at': Timestamp.fromDate(now), // Timestamp for when this grouped entry was created
+          'created_at': Timestamp.fromDate(now),
         };
       }
       (groupedExpenses[groupKey]!['item_name'] as List).add(item_name);
@@ -227,14 +279,11 @@ class HomeScreenProvider extends ChangeNotifier {
         batch.set(docRef, entry);
       }
       await batch.commit();
-      showSuccess(groupedExpenses.length); // Show count of grouped entries
-      // Re-initialize the stream to reflect new data from the top
-      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      showSuccess(groupedExpenses.length);
       _setupStream(context, authProvider.user!.uid, authProvider.walletId);
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error saving grouped expenses: $e')),
-      );
+      Provider.of<AuthProvider>(context, listen: false).showError(context);
+      debugPrint('Save grouped expenses error: $e');
     }
   }
 
@@ -260,14 +309,11 @@ class HomeScreenProvider extends ChangeNotifier {
         _transcription = '';
         notifyListeners();
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Microphone permission denied')),
-        );
+        Provider.of<AuthProvider>(context, listen: false).showError(context);
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error starting recording: $e')),
-      );
+      Provider.of<AuthProvider>(context, listen: false).showError(context);
+      debugPrint('Start recording error: $e');
     }
   }
 
@@ -292,40 +338,30 @@ class HomeScreenProvider extends ChangeNotifier {
         if (transcript != null && transcript.isNotEmpty) {
           await _parseAndAddExpense(transcript, context);
         } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Could not transcribe audio.')),
-          );
+          Provider.of<AuthProvider>(context, listen: false).showError(context);
         }
         await file.delete();
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No audio data recorded.')),
-        );
+        Provider.of<AuthProvider>(context, listen: false).showError(context);
       }
-
-      _isProcessing = false;
-      notifyListeners();
     } catch (e) {
+      Provider.of<AuthProvider>(context, listen: false).showError(context);
+      debugPrint('Stop recording error: $e');
+    } finally {
       _isProcessing = false;
+      _recorder?.dispose();
+      _recorder = null;
       notifyListeners();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error processing audio: $e')),
-      );
     }
   }
 
   Future<void> _parseAndAddExpense(String transcription, BuildContext context) async {
     try {
-      // GPT will still return individual items
       final expenses = await GptParser.extractStructuredData(transcription);
-
-      // Now, saveMultipleToFirestore will handle the grouping based on category and date
       await saveMultipleToFirestore(expenses!, context);
-
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error parsing expenses: $e')),
-      );
+      Provider.of<AuthProvider>(context, listen: false).showError(context);
+      debugPrint('Parse expenses error: $e');
     }
   }
 
@@ -346,9 +382,7 @@ class HomeScreenProvider extends ChangeNotifier {
     try {
       final walletId = _walletIdController.text.trim();
       if (walletId.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Please enter a wallet ID')),
-        );
+        Provider.of<AuthProvider>(context, listen: false).showError(context);
         return;
       }
 
@@ -361,6 +395,7 @@ class HomeScreenProvider extends ChangeNotifier {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(success ? 'Joined wallet successfully' : walletProvider.errorMessage ?? 'Failed to join wallet'),
+          backgroundColor: success ? Colors.green : Colors.red,
         ),
       );
 
@@ -371,9 +406,8 @@ class HomeScreenProvider extends ChangeNotifier {
         notifyListeners();
       }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error joining wallet: $e')),
-      );
+      Provider.of<AuthProvider>(context, listen: false).showError(context);
+      debugPrint('Join wallet error: $e');
     }
   }
 
@@ -381,30 +415,32 @@ class HomeScreenProvider extends ChangeNotifier {
     final query = searchQuery.toLowerCase();
     if (query.isEmpty) return true;
 
-    final itemNames = data['item_name']; // This is now always a List
+    final itemNames = data['item_name'];
     final category = data['category']?.toString().toLowerCase() ?? '';
     final date = data['date_of_purchase']?.toString().toLowerCase() ?? '';
 
-    // Check if any item name in the list matches
     if (itemNames is List && itemNames.any((item) => item.toString().toLowerCase().contains(query))) return true;
 
     return category.contains(query) || date.contains(query);
   }
 
   static double calculateReceiptTotal(Map<String, dynamic> data) {
-    final prices = data['unit_price']; // This is now always a List
+    final prices = data['unit_price'];
     if (prices is List) {
       return prices.fold(0.0, (sum, price) => sum + (price is num ? price.toDouble() : 0.0));
     }
-    return 0.0; // Should not happen if data is structured as expected
+    return 0.0;
   }
 
   @override
   void dispose() {
+    _debounceTimer?.cancel();
     _recorder?.dispose();
     _recorder = null;
     _walletIdController.dispose();
     _streamSubscription?.cancel();
+    _queryCache.clear();
+    _userNameCache.clear();
     super.dispose();
   }
 }

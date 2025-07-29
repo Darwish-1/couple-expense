@@ -1,7 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../providers/auth_provider.dart';
+import 'package:firebase_auth/firebase_auth.dart' hide AuthProvider;
+import 'auth_provider.dart';
 
 class WalletProvider extends ChangeNotifier {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -10,6 +11,19 @@ class WalletProvider extends ChangeNotifier {
   DocumentSnapshot? wallet;
   List<Map<String, String>> memberData = [];
   bool loading = false;
+
+  WalletProvider() {
+    FirebaseAuth.instance.authStateChanges().listen((User? user) {
+      if (user != null) {
+        fetchWallet(user.uid);
+      } else {
+        wallet = null;
+        walletId = null;
+        memberData.clear();
+        notifyListeners();
+      }
+    });
+  }
 
   Future<bool> createWallet(String userId, String userDisplayName, BuildContext context) async {
     try {
@@ -28,11 +42,13 @@ class WalletProvider extends ChangeNotifier {
       await fetchWallet(userId);
       errorMessage = null;
       loading = false;
+      debugPrint('Wallet created with ID: $walletId');
       notifyListeners();
       return true;
     } catch (e) {
-      errorMessage = 'Failed to create wallet: $e';
+      errorMessage = 'Failed to create wallet';
       loading = false;
+      debugPrint('Create wallet error: $e');
       notifyListeners();
       return false;
     }
@@ -48,6 +64,7 @@ class WalletProvider extends ChangeNotifier {
       if (!walletDoc.exists) {
         errorMessage = 'Wallet not found';
         loading = false;
+        debugPrint('Wallet not found: $walletIdToJoin');
         notifyListeners();
         return false;
       }
@@ -63,11 +80,13 @@ class WalletProvider extends ChangeNotifier {
       await fetchWallet(userId);
       errorMessage = null;
       loading = false;
+      debugPrint('Joined wallet with ID: $walletId');
       notifyListeners();
       return true;
     } catch (e) {
-      errorMessage = 'Error joining wallet: $e';
+      errorMessage = 'Error joining wallet';
       loading = false;
+      debugPrint('Join wallet error: $e');
       notifyListeners();
       return false;
     }
@@ -79,9 +98,17 @@ class WalletProvider extends ChangeNotifier {
       notifyListeners();
       final walletRef = _firestore.collection('wallets').doc(walletId);
       final walletDoc = await walletRef.get();
-      if (!walletDoc.exists || walletDoc['ownerUid'] != currentUserId) {
+      if (!walletDoc.exists) {
+        errorMessage = 'Wallet not found';
+        loading = false;
+        debugPrint('Wallet not found: $walletId');
+        notifyListeners();
+        return false;
+      }
+      if (walletDoc['ownerUid'] != currentUserId) {
         errorMessage = 'Only the wallet owner can add members';
         loading = false;
+        debugPrint('Permission denied: Not wallet owner');
         notifyListeners();
         return false;
       }
@@ -93,8 +120,9 @@ class WalletProvider extends ChangeNotifier {
           .get();
 
       if (userQuery.docs.isEmpty) {
-        errorMessage = 'No user found with email: $email';
+        errorMessage = 'No user found with that email';
         loading = false;
+        debugPrint('No user found for email: $email');
         notifyListeners();
         return false;
       }
@@ -107,11 +135,13 @@ class WalletProvider extends ChangeNotifier {
       await fetchWallet(currentUserId);
       errorMessage = null;
       loading = false;
+      debugPrint('User added to wallet: $uid');
       notifyListeners();
       return true;
     } catch (e) {
-      errorMessage = 'Failed to add user: $e';
+      errorMessage = 'Failed to add user';
       loading = false;
+      debugPrint('Add user error: $e');
       notifyListeners();
       return false;
     }
@@ -121,6 +151,7 @@ class WalletProvider extends ChangeNotifier {
     if (uidToRemove == currentUserId) {
       errorMessage = "You can't remove yourself";
       loading = false;
+      debugPrint('Cannot remove self: $uidToRemove');
       notifyListeners();
       return false;
     }
@@ -136,11 +167,13 @@ class WalletProvider extends ChangeNotifier {
       await fetchWallet(currentUserId);
       errorMessage = null;
       loading = false;
+      debugPrint('User removed: $uidToRemove');
       notifyListeners();
       return true;
     } catch (e) {
-      errorMessage = 'Failed to remove user: $e';
+      errorMessage = 'Failed to remove user';
       loading = false;
+      debugPrint('Remove user error: $e');
       notifyListeners();
       return false;
     }
@@ -155,6 +188,7 @@ class WalletProvider extends ChangeNotifier {
       if (!walletDoc.exists) {
         errorMessage = 'Wallet not found';
         loading = false;
+        debugPrint('Wallet not found: $walletId');
         notifyListeners();
         return false;
       }
@@ -162,6 +196,7 @@ class WalletProvider extends ChangeNotifier {
       if (walletDoc['ownerUid'] == userId && List<String>.from(walletDoc['members'] ?? []).length > 1) {
         errorMessage = 'Owner cannot leave unless they are the last member';
         loading = false;
+        debugPrint('Owner cannot leave: $userId');
         notifyListeners();
         return false;
       }
@@ -170,10 +205,13 @@ class WalletProvider extends ChangeNotifier {
         'members': FieldValue.arrayRemove([userId]),
       });
 
-      // Delete wallet if empty
       final updatedDoc = await walletRef.get();
       if (updatedDoc.exists && List<String>.from(updatedDoc['members'] ?? []).isEmpty) {
-        await walletRef.delete();
+        final transactions = await _firestore.collection('transactions').where('walletId', isEqualTo: walletId).get();
+        if (transactions.docs.isEmpty) {
+          await walletRef.delete();
+          debugPrint('Wallet deleted: $walletId');
+        }
       }
 
       wallet = null;
@@ -182,11 +220,13 @@ class WalletProvider extends ChangeNotifier {
       await Provider.of<AuthProvider>(context, listen: false).updateWalletId(null);
       errorMessage = null;
       loading = false;
+      debugPrint('User left wallet: $userId');
       notifyListeners();
       return true;
     } catch (e) {
-      errorMessage = 'Failed to leave wallet: $e';
+      errorMessage = 'Failed to leave wallet';
       loading = false;
+      debugPrint('Leave wallet error: $e');
       notifyListeners();
       return false;
     }
@@ -196,6 +236,7 @@ class WalletProvider extends ChangeNotifier {
     try {
       loading = true;
       notifyListeners();
+      await Future.delayed(const Duration(milliseconds: 50)); // Prevent main thread blocking
       final query = await _firestore
           .collection('wallets')
           .where('members', arrayContains: userId)
@@ -206,34 +247,45 @@ class WalletProvider extends ChangeNotifier {
         wallet = query.docs.first;
         walletId = wallet!.id;
         await fetchMemberEmails(wallet!['members']);
+        debugPrint('Wallet fetched with ID: $walletId');
       } else {
         wallet = null;
         walletId = null;
         memberData.clear();
+        debugPrint('No wallet found for user: $userId');
       }
       errorMessage = null;
       loading = false;
       notifyListeners();
     } catch (e) {
-      errorMessage = 'Failed to load wallet: $e';
+      errorMessage = 'Failed to load wallet';
       loading = false;
+      debugPrint('Fetch wallet error: $e');
       notifyListeners();
     }
   }
 
   Future<void> fetchMemberEmails(List<dynamic> memberUids) async {
     memberData.clear();
-    for (var uid in memberUids) {
+    const batchSize = 10;
+    for (var i = 0; i < memberUids.length; i += batchSize) {
+      final batchUids = memberUids.sublist(i, i + batchSize > memberUids.length ? memberUids.length : i + batchSize);
       try {
-        final doc = await _firestore.collection('users').doc(uid).get();
-        if (doc.exists) {
+        await Future.delayed(const Duration(milliseconds: 50)); // Prevent main thread blocking
+        final query = await _firestore
+            .collection('users')
+            .where(FieldPath.documentId, whereIn: batchUids)
+            .get();
+        for (var doc in query.docs) {
           final String email = (doc.data() as Map<String, dynamic>?)?['email']?.toString() ?? 'Unknown User';
-          memberData.add({'uid': uid.toString(), 'email': email});
-        } else {
+          memberData.add({'uid': doc.id, 'email': email});
+        }
+        debugPrint('Fetched member emails for UIDs: $batchUids');
+      } catch (e) {
+        for (var uid in batchUids) {
           memberData.add({'uid': uid.toString(), 'email': 'Unknown User'});
         }
-      } catch (e) {
-        memberData.add({'uid': uid.toString(), 'email': 'Unknown User'});
+        debugPrint('Fetch member emails error: $e');
       }
     }
     notifyListeners();

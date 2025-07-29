@@ -7,32 +7,98 @@ class LoginScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final auth = Provider.of<AuthProvider>(context);
+    final authProvider = Provider.of<AuthProvider>(context);
 
-     return Scaffold(
-      body: Center(
-        child: ElevatedButton.icon(
-          icon: const Icon(Icons.login),
-          label: const Text("Sign in with Google"),
-        onPressed: () async {
-  await auth.signInWithGoogle();
-
-  // Make sure the widget is still in the tree
-  if (!context.mounted) return;
-
-  if (auth.status == AuthStatus.unauthenticated) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Login cancelled")),
-    );
-  } else if (auth.status == AuthStatus.error) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text("Error: ${auth.errorMessage}")),
-    );
-  }
-}
-
-        ),
-      ),
+    return FutureBuilder(
+      future: authProvider.waitForInitialization(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+        if (snapshot.hasError) {
+          return Scaffold(
+            body: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Text(
+                    'Initialization error',
+                    style: TextStyle(color: Colors.redAccent, fontSize: 16),
+                  ),
+                  const SizedBox(height: 20),
+                  ElevatedButton(
+                    onPressed: () => Navigator.pushReplacementNamed(context, '/login'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.symmetric(vertical: 15, horizontal: 20),
+                    ),
+                    child: const Text('Retry', style: TextStyle(fontSize: 16)),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
+        return Scaffold(
+          backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+          body: Center(
+            child: authProvider.status == AuthStatus.loading
+                ? const CircularProgressIndicator(color: Colors.blue)
+                : authProvider.status == AuthStatus.error
+                    ? Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            authProvider.errorMessage ?? 'An error occurred',
+                            style: const TextStyle(color: Colors.redAccent, fontSize: 16),
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 20),
+                          ElevatedButton.icon(
+                            icon: const Icon(Icons.refresh, color: Colors.white),
+                            label: const Text('Retry Sign-In', style: TextStyle(fontSize: 16, color: Colors.white)),
+                            onPressed: authProvider.signInWithGoogle,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.blue,
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              padding: const EdgeInsets.symmetric(vertical: 15, horizontal: 20),
+                            ),
+                          ),
+                        ],
+                      )
+                    : Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Text(
+                            'Welcome to Expense Tracker',
+                            style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.blue),
+                          ),
+                          const SizedBox(height: 20),
+                          ElevatedButton.icon(
+                            icon: const Icon(Icons.login, color: Colors.white),
+                            label: const Text('Sign in with Google', style: TextStyle(fontSize: 16, color: Colors.white)),
+                            onPressed: () async {
+                              await authProvider.signInWithGoogle();
+                              if (!context.mounted) return;
+                              authProvider.showError(context);
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.blue,
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              padding: const EdgeInsets.symmetric(vertical: 15, horizontal: 20),
+                            ),
+                          ),
+                        ],
+                      ),
+          ),
+        );
+      },
     );
   }
 }

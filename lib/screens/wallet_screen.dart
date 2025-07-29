@@ -1,6 +1,7 @@
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_auth/firebase_auth.dart' hide AuthProvider;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../providers/auth_provider.dart';
 import '../providers/wallet_provider.dart';
 
 class WalletScreen extends StatefulWidget {
@@ -16,10 +17,30 @@ class _WalletScreenState extends State<WalletScreen> {
   final TextEditingController _inviteEmailController = TextEditingController();
 
   @override
+  void initState() {
+   super.initState();
+
+  // Delay to ensure context is available
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    final args = ModalRoute.of(context)?.settings.arguments as Map<String, dynamic>?;
+    final walletId = args?['walletId'];
+
+    if (walletId != null) {
+      context.read<WalletProvider>().fetchWallet(walletId);
+    }
+  });
+  }
+
+  @override
   void dispose() {
     _walletIdController.dispose();
     _inviteEmailController.dispose();
     super.dispose();
+  }
+
+  bool _isValidEmail(String email) {
+    final RegExp emailRegex = RegExp(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$');
+    return emailRegex.hasMatch(email);
   }
 
   Future<void> _leaveWallet(WalletProvider walletProvider) async {
@@ -97,15 +118,71 @@ class _WalletScreenState extends State<WalletScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final walletProvider = Provider.of<WalletProvider>(context);
-    final theme = Theme.of(context);
-
+    return Consumer<AuthProvider>(
+      builder: (context, authProvider, _) {
+        if (authProvider.status == AuthStatus.loading) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+        if (authProvider.status == AuthStatus.unauthenticated) {
+          return Scaffold(
+            appBar: AppBar(
+              title: const Text("Your Wallet", style: TextStyle(fontWeight: FontWeight.bold)),
+              centerTitle: true,
+              backgroundColor: Theme.of(context).primaryColor,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              shape: const RoundedRectangleBorder(
+                borderRadius: BorderRadius.vertical(bottom: Radius.circular(20)),
+              ),
+            ),
+            body: Center(
+              child: ElevatedButton.icon(
+                onPressed: () => authProvider.signInWithGoogle(),
+                icon: const Icon(Icons.login, color: Colors.white),
+                label: const Text("Sign in with Google", style: TextStyle(fontSize: 16, color: Colors.white)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.deepPurple,
+                  padding: const EdgeInsets.symmetric(vertical: 15, horizontal: 20),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+            ),
+          );
+        }
+        if (authProvider.status == AuthStatus.error) {
+          return Scaffold(
+            body: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      authProvider.errorMessage ?? 'Authentication error occurred',
+                      style: const TextStyle(color: Colors.redAccent, fontSize: 16),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 20),
+                    ElevatedButton(
+                      onPressed: () => authProvider.signInWithGoogle(),
+                      child: const Text("Retry Sign-In"),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        }
+      return Consumer<WalletProvider>(
+  builder: (context, walletProvider, _) {
     return Scaffold(
-      backgroundColor: theme.scaffoldBackgroundColor,
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       appBar: AppBar(
         title: const Text("Your Wallet", style: TextStyle(fontWeight: FontWeight.bold)),
         centerTitle: true,
-        backgroundColor: theme.primaryColor,
+        backgroundColor: Theme.of(context).primaryColor,
         foregroundColor: Colors.white,
         elevation: 0,
         shape: const RoundedRectangleBorder(
@@ -129,18 +206,31 @@ class _WalletScreenState extends State<WalletScreen> {
                     padding: const EdgeInsets.all(16.0),
                     child: Text(
                       walletProvider.errorMessage!,
-                      style: TextStyle(color: Colors.redAccent, fontSize: 16),
+                      style: const TextStyle(color: Colors.redAccent, fontSize: 16),
                       textAlign: TextAlign.center,
                     ),
                   ),
                 )
               : walletProvider.wallet != null
-                  ? _buildWalletDetails(walletProvider, theme)
-                  : _buildNoWalletState(walletProvider, theme),
+                  ? _buildWalletDetails(walletProvider, Theme.of(context))
+                  : _buildNoWalletState(walletProvider, Theme.of(context)),
+    );
+  },
+);
+
+      },
     );
   }
 
   Widget _buildWalletDetails(WalletProvider walletProvider, ThemeData theme) {
+    if (walletProvider.wallet == null) {
+      return Center(
+        child: Text(
+          "Wallet data is not available",
+          style: theme.textTheme.bodyMedium?.copyWith(color: Colors.redAccent),
+        ),
+      );
+    }
     return SingleChildScrollView(
       padding: const EdgeInsets.all(20),
       child: Column(
@@ -155,7 +245,7 @@ class _WalletScreenState extends State<WalletScreen> {
             context,
             [
               _buildInfoRow("Wallet ID:", walletProvider.wallet!.id, Icons.credit_card),
-              _buildInfoRow("Wallet Name:", walletProvider.wallet!['name'], Icons.wallet),
+              _buildInfoRow("Wallet Name:", walletProvider.wallet!['name']?.toString() ?? 'Unnamed Wallet', Icons.wallet),
             ],
           ),
           const SizedBox(height: 25),
@@ -200,8 +290,13 @@ class _WalletScreenState extends State<WalletScreen> {
             width: double.infinity,
             child: ElevatedButton.icon(
               onPressed: () async {
+                final email = _inviteEmailController.text.trim();
+                if (!_isValidEmail(email)) {
+                  _showSnackBar("Please enter a valid email address", "", success: false);
+                  return;
+                }
                 final success = await walletProvider.addUserByEmail(
-                  _inviteEmailController.text.trim(),
+                  email,
                   walletProvider.wallet!.id,
                   _auth.currentUser!.uid,
                 );
@@ -229,6 +324,11 @@ class _WalletScreenState extends State<WalletScreen> {
   }
 
   Widget _buildNoWalletState(WalletProvider walletProvider, ThemeData theme) {
+    if (walletProvider.errorMessage != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _showSnackBar(walletProvider.errorMessage, "", success: false);
+      });
+    }
     return Padding(
       padding: const EdgeInsets.all(20),
       child: Column(
@@ -366,19 +466,19 @@ class _WalletScreenState extends State<WalletScreen> {
 
   Widget _buildMemberTile(WalletProvider walletProvider, Map<String, String> member, ThemeData theme) {
     final isCurrentUser = member['uid'] == _auth.currentUser!.uid;
-    final isWalletOwner = walletProvider.wallet!['ownerUid'] == _auth.currentUser!.uid;
+    final isWalletOwner = walletProvider.wallet?['ownerUid'] == _auth.currentUser!.uid;
 
     return ListTile(
       leading: CircleAvatar(
         backgroundColor: Colors.deepPurple.withOpacity(0.1),
         child: Text(
           member['email']!.substring(0, 1).toUpperCase(),
-          style: TextStyle(color: Colors.deepPurple, fontWeight: FontWeight.bold),
+          style: const TextStyle(color: Colors.deepPurple, fontWeight: FontWeight.bold),
         ),
       ),
       title: Text(
         member['email']!,
-        style: TextStyle(fontWeight: FontWeight.w500, color: Colors.blueGrey[800]),
+        style: const TextStyle(fontWeight: FontWeight.w500, color: Colors.blueGrey),
       ),
       subtitle: isCurrentUser ? const Text("You", style: TextStyle(color: Colors.green, fontSize: 12)) : null,
       trailing: isWalletOwner && !isCurrentUser

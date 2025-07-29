@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:couple_expenses/providers/home_screen_provider.dart'; // Make sure this path is correct
+import 'package:couple_expenses/providers/home_screen_provider.dart';
 
 class SearchAndToggleCard extends StatelessWidget {
   const SearchAndToggleCard({super.key});
@@ -13,14 +13,14 @@ class SearchAndToggleCard extends StatelessWidget {
       elevation: 3,
       child: Padding(
         padding: const EdgeInsets.all(16.0),
-        child: Column( 
+        child: Column(
           children: [
             TextField(
               onChanged: (val) => Provider.of<HomeScreenProvider>(context, listen: false)
                   .updateSearchQuery(val),
               decoration: InputDecoration(
                 hintText: 'Search expenses...',
-                prefixIcon: const Icon(Icons.search, color: Colors.deepPurple),
+                prefixIcon: Icon(Icons.search, color: Theme.of(context).primaryColor),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(12),
                   borderSide: BorderSide.none,
@@ -31,21 +31,33 @@ class SearchAndToggleCard extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 10),
-            Selector<HomeScreenProvider, bool>(
-              selector: (_, provider) => provider.showWalletReceipts,
-              builder: (_, showWalletReceipts, __) => Row(
+            Selector<HomeScreenProvider, ({bool showWalletReceipts, bool isLoadingStream})>(
+              selector: (_, provider) => (
+                showWalletReceipts: provider.showWalletReceipts,
+                isLoadingStream: provider.isLoadingStream,
+              ),
+              builder: (_, data, __) => Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
-                    showWalletReceipts ? "Viewing Wallet Expenses" : "Viewing My Expenses",
+                    data.showWalletReceipts ? "Viewing Wallet Expenses" : "Viewing My Expenses",
                     style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                   ),
-                  Switch(
-                    value: showWalletReceipts,
-                    onChanged: (newValue) => Provider.of<HomeScreenProvider>(context, listen: false)
-                        .toggleWalletReceipts(context), // Pass context
-                    activeColor: Colors.deepPurple,
-                  ),
+                  data.isLoadingStream
+                      ? const SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
+                          ),
+                        )
+                      : Switch(
+                          value: data.showWalletReceipts,
+                          onChanged: (newValue) => Provider.of<HomeScreenProvider>(context, listen: false)
+                              .toggleWalletReceipts(context),
+                          activeColor: Theme.of(context).primaryColor,
+                        ),
                 ],
               ),
             ),
@@ -53,6 +65,5 @@ class SearchAndToggleCard extends StatelessWidget {
         ),
       ),
     );
-    
   }
 }
