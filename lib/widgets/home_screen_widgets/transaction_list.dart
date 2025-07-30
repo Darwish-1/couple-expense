@@ -1,7 +1,5 @@
 import 'dart:async';
-
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:couple_expenses/widgets/home_screen_widgets/successpop.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
@@ -9,6 +7,9 @@ import 'package:couple_expenses/providers/auth_provider.dart';
 import 'package:couple_expenses/providers/home_screen_provider.dart';
 import 'package:couple_expenses/screens/edit_receipt_screen.dart';
 import 'package:couple_expenses/widgets/home_screen_widgets/recording_section.dart';
+import 'package:couple_expenses/widgets/home_screen_widgets/successpop.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 
 class TransactionList extends StatefulWidget {
   final String userId;
@@ -22,12 +23,18 @@ class TransactionList extends StatefulWidget {
 class _TransactionListState extends State<TransactionList> {
   final ScrollController _scrollController = ScrollController();
   late NumberFormat _currencyFormatter;
+  late NumberFormat _itemPriceFormatter;
   Timer? _debounceTimer;
 
   @override
   void initState() {
     super.initState();
     _currencyFormatter = NumberFormat.currency(
+      locale: 'en_US',
+      symbol: 'EGP ',
+      decimalDigits: 0,
+    );
+    _itemPriceFormatter = NumberFormat.currency(
       locale: 'en_US',
       symbol: '',
       decimalDigits: 0,
@@ -55,20 +62,8 @@ class _TransactionListState extends State<TransactionList> {
     }
   }
 
-  String _getInitials(String? name) {
-    if (name == null || name.isEmpty) return '?';
-    List<String> parts = name.split(' ');
-    if (parts.length >= 2) {
-      return (parts[0][0] + parts[1][0]).toUpperCase();
-    } else if (parts.isNotEmpty) {
-      return parts[0][0].toUpperCase();
-    }
-    return '?';
-  }
-
   @override
   Widget build(BuildContext context) {
-    debugPrint('TransactionList build');
     return Selector<HomeScreenProvider, ({List<DocumentSnapshot> allDocs, String searchQuery, bool isRecording, bool isProcessing, bool showSuccessPopup, int savedExpensesCount, bool isLoadingMore, bool hasMore, bool showWalletReceipts, bool isLoadingStream, String? selectedUserFilter})>(
       selector: (_, provider) => (
         allDocs: provider.allDocs,
@@ -86,39 +81,42 @@ class _TransactionListState extends State<TransactionList> {
       builder: (context, selectorData, _) {
         final authProvider = Provider.of<AuthProvider>(context, listen: false);
         final homeScreenProvider = Provider.of<HomeScreenProvider>(context, listen: false);
-        final currentUserId = authProvider.user?.uid;
 
         Widget mainContent;
 
         if (selectorData.showWalletReceipts && authProvider.walletId == null) {
-          return Center(
+          mainContent = SingleChildScrollView(
             child: Padding(
-              padding: const EdgeInsets.all(20.0),
+              padding: const EdgeInsets.all(12),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.account_balance_wallet_outlined, size: 60, color: Colors.grey[400]),
-                  const SizedBox(height: 15),
+                  Icon(Icons.account_balance_wallet_outlined, size: 48, color: Colors.grey.shade400),
+                  const SizedBox(height: 8),
                   Text(
-                    "You haven't joined a wallet yet.",
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 18, color: Colors.grey[600], fontWeight: FontWeight.w500),
+                    'No Wallet Joined',
+                    style: GoogleFonts.inter(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.grey.shade600,
+                    ),
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    "Join or create one to view shared expenses with your partner.",
+                    'Join a wallet to view shared expenses.',
+                    style: GoogleFonts.inter(
+                      fontSize: 14,
+                      color: Colors.grey.shade500,
+                    ),
                     textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 14, color: Colors.grey[500]),
                   ),
                 ],
               ),
             ),
           );
-        }
-
-        if (selectorData.allDocs.isEmpty && (selectorData.isLoadingMore || selectorData.isLoadingStream)) {
+        } else if (selectorData.allDocs.isEmpty && (selectorData.isLoadingMore || selectorData.isLoadingStream)) {
           mainContent = const Center(
-            child: CircularProgressIndicator(color: Colors.blue),
+            child: CircularProgressIndicator(color: Colors.indigo),
           );
         } else {
           final docs = selectorData.allDocs.where((doc) {
@@ -127,248 +125,254 @@ class _TransactionListState extends State<TransactionList> {
           }).toList();
 
           if (docs.isEmpty) {
-            mainContent = Center(
+            mainContent = SingleChildScrollView(
               child: Padding(
-                padding: const EdgeInsets.all(20.0),
+                padding: const EdgeInsets.all(12),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.receipt_long, size: 60, color: Colors.grey[400]),
-                    const SizedBox(height: 15),
+                    Icon(Icons.receipt_long, size: 48, color: Colors.grey.shade400),
+                    const SizedBox(height: 8),
                     Text(
                       selectorData.searchQuery.isEmpty
                           ? (selectorData.selectedUserFilter == null
-                              ? "No expenses recorded."
-                              : "No expenses found for this user.")
-                          : "No expenses found for '${selectorData.searchQuery}'.",
-                      textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 18, color: Colors.grey[600], fontWeight: FontWeight.w500),
-                    ),
-                    if (selectorData.searchQuery.isEmpty && selectorData.selectedUserFilter == null) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        "Tap the microphone button to add a new expense.",
-                        textAlign: TextAlign.center,
-                        style: TextStyle(fontSize: 14, color: Colors.grey[500]),
+                              ? 'No expenses recorded.'
+                              : 'No expenses for this user.')
+                          : 'No results for "${selectorData.searchQuery}".',
+                      style: GoogleFonts.inter(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.grey.shade600,
                       ),
-                    ],
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Try recording a new expense.',
+                      style: GoogleFonts.inter(
+                        fontSize: 14,
+                        color: Colors.grey.shade500,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
                   ],
                 ),
               ),
             );
           } else {
-            final NumberFormat totalCurrencyFormatter = NumberFormat.currency(
-              locale: 'en_US',
-              symbol: 'EGP ',
-              decimalDigits: 2,
-            );
             mainContent = RefreshIndicator(
               onRefresh: () async {
                 homeScreenProvider.initializeStream(context, widget.userId);
               },
-              color: Theme.of(context).primaryColor,
-              child: ListView.builder(
-                controller: _scrollController,
-                itemCount: docs.length + (selectorData.isLoadingMore && selectorData.hasMore ? 1 : 0),
-                itemBuilder: (context, index) {
-                  if (index == docs.length) {
-                    return const Padding(
-                      padding: EdgeInsets.all(8.0),
-                      child: Center(child: CircularProgressIndicator(color: Colors.blue)),
-                    );
-                  }
-
-                  final doc = docs[index];
-                  final data = doc.data() as Map<String, dynamic>;
-                  final itemNames = (data['item_name'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [];
-                  final unitPrices = (data['unit_price'] as List<dynamic>?)?.map((e) => (e as num).toDouble()).toList() ?? [];
-                  final date = (data['date_of_purchase'] is Timestamp)
-                      ? DateFormat('MMM dd, yyyy').format((data['date_of_purchase'] as Timestamp).toDate())
-                      : (data['date_of_purchase'] ?? 'Unknown Date');
-                  final category = data['category'] ?? 'N/A';
-                  final total = HomeScreenProvider.calculateReceiptTotal(data);
-                  final expenseUserId = data['userId'];
-                  final isMyExpense = currentUserId == expenseUserId;
-
-                  String displayTitle = category;
-                  if (itemNames.isNotEmpty && itemNames.length == 1) {
-                    displayTitle = itemNames[0];
-                  } else if (itemNames.length > 1) {
-                    displayTitle = "$category (${itemNames.length} items)";
-                  }
-
-                  String itemListString = '';
-                  if (itemNames.isNotEmpty) {
-                    List<String> formattedItems = [];
-                    for (int i = 0; i < itemNames.length; i++) {
-                      final itemName = itemNames[i];
-                      final price = unitPrices.length > i ? unitPrices[i] : 0.0;
-                      formattedItems.add('$itemName (${_currencyFormatter.format(price)})');
-                    }
-                    itemListString = formattedItems.join(', ');
-                  }
-
-                  return Dismissible(
-                    key: ValueKey(doc.id),
-                    direction: DismissDirection.endToStart,
-                    background: Container(
-                      alignment: Alignment.centerRight,
-                      padding: const EdgeInsets.symmetric(horizontal: 20),
-                      decoration: BoxDecoration(
-                        color: Colors.red.shade600,
-                        borderRadius: BorderRadius.circular(15),
+              color: Colors.indigo.shade700,
+              child: Card(
+                color: Colors.white,
+                elevation: 1,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                child: Padding(
+                  padding: const EdgeInsets.all(10),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        selectorData.showWalletReceipts ? 'Shared Transactions' : 'My Transactions',
+                        style: GoogleFonts.inter(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.indigo.shade700,
+                        ),
                       ),
-                      child: const Icon(Icons.delete, color: Colors.white, size: 30),
-                    ),
-                    confirmDismiss: (direction) async {
-                      return await showDialog(
-                        context: context,
-                        builder: (dialogContext) => AlertDialog(
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-                          title: const Text('Delete Expense?', style: TextStyle(fontWeight: FontWeight.bold)),
-                          content: const Text('Are you sure you want to delete this expense permanently? This action cannot be undone.'),
-                          actions: [
-                            TextButton(
-                              onPressed: () => Navigator.of(dialogContext).pop(false),
-                              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-                            ),
-                            ElevatedButton(
-                              onPressed: () => Navigator.of(dialogContext).pop(true),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.red,
-                                foregroundColor: Colors.white,
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                              ),
-                              child: const Text('Delete'),
-                            ),
-                          ],
-                        ),
-                      );
-                    },
-                    onDismissed: (direction) async {
-                      try {
-                        await FirebaseFirestore.instance.collection('receipts').doc(doc.id).delete();
-                        homeScreenProvider.removeDoc(doc.id);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Expense deleted successfully'),
-                            backgroundColor: Colors.green,
-                          ),
-                        );
-                      } catch (e) {
-                        Provider.of<AuthProvider>(context, listen: false).showError(context);
-                        debugPrint('Error deleting expense: $e');
-                      }
-                    },
-                    child: GestureDetector(
-                      onLongPress: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => EditReceiptScreen(
-                              receiptId: doc.id,
-                              data: data,
-                            ),
-                          ),
-                        );
-                      },
-                      child: Card(
-                        color: Colors.white,
-                        margin: const EdgeInsets.symmetric(vertical: 8),
-                        elevation: 4,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(15),
-                        ),
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Expanded(
-                                    child: Text(
-                                      displayTitle,
-                                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: Colors.deepPurple),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                  Text(
-                                    totalCurrencyFormatter.format(total),
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 18,
-                                      color: Colors.teal,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Text(
-                                    "Category: $category",
-                                    style: TextStyle(fontSize: 14, color: Colors.grey[700]),
-                                  ),
-                                  Text(
-                                    date,
-                                    style: TextStyle(fontSize: 14, color: Colors.grey[700]),
-                                  ),
-                                ],
-                              ),
-                              if (selectorData.showWalletReceipts) ...[
-                                const SizedBox(height: 8),
-                                FutureBuilder<String?>(
-                                  future: homeScreenProvider.fetchUserDisplayName(expenseUserId ?? ''),
-                                  builder: (context, snapshot) {
-                                    final name = snapshot.data;
-                                    final initials = _getInitials(name);
-                                    return Row(
-                                      children: [
-                                        CircleAvatar(
-                                          radius: 12,
-                                          backgroundColor: isMyExpense ? Colors.blue.shade100 : Colors.purple.shade100,
-                                          child: Text(
-                                            initials,
-                                            style: TextStyle(
-                                              fontSize: 10,
-                                              fontWeight: FontWeight.bold,
-                                              color: isMyExpense ? Colors.blue.shade800 : Colors.purple.shade800,
-                                            ),
-                                          ),
-                                        ),
-                                        const SizedBox(width: 8),
-                                        Text(
-                                          isMyExpense ? 'By: Me' : 'By: ${name ?? 'Unknown'}',
-                                          style: TextStyle(
-                                            fontSize: 14,
-                                            color: isMyExpense ? Colors.blue.shade700 : Colors.purple.shade700,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                      ],
-                                    );
-                                  },
-                                ),
-                              ],
-                              if (itemListString.isNotEmpty) ...[
-                                const SizedBox(height: 10),
-                                Text(
-                                  itemListString,
-                                  style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ],
+                      const SizedBox(height: 8),
+                      ListView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        controller: _scrollController,
+                        itemCount: docs.length + (selectorData.isLoadingMore && selectorData.hasMore ? 1 : 0),
+                        itemBuilder: (context, index) {
+                          if (index == docs.length) {
+                            return const Center(child: CircularProgressIndicator(color: Colors.indigo));
+                          }
+
+                          final doc = docs[index];
+                          final data = doc.data() as Map<String, dynamic>;
+                          final itemNames = (data['item_name'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [];
+                          final unitPrices = (data['unit_price'] as List<dynamic>?)?.map((e) => (e as num).toDouble()).toList() ?? [];
+                          final date = (data['date_of_purchase'] is Timestamp)
+                              ? DateFormat('MMM dd').format((data['date_of_purchase'] as Timestamp).toDate())
+                              : (data['date_of_purchase'] ?? 'N/A');
+                          final category = data['category'] ?? 'N/A';
+                          final total = HomeScreenProvider.calculateReceiptTotal(data);
+
+                          String displayTitle = category;
+                          String itemListString = '';
+                          if (itemNames.isNotEmpty) {
+                            itemListString = List.generate(
+                              itemNames.length,
+                              (i) => '${itemNames[i]}(${_itemPriceFormatter.format(unitPrices.length > i ? unitPrices[i] : 0)})',
+                            ).join(', ');
+                          }
+
+                          debugPrint('Transaction item: id=${doc.id}, category=$category, items=$itemListString, total=$total, itemNames=$itemNames, unitPrices=$unitPrices, isGrouped=${itemNames.length > 1}, locale=${_itemPriceFormatter.locale}');
+
+                          return Animate(
+                            effects: const [
+                              FadeEffect(duration: Duration(milliseconds: 150)),
+                              ScaleEffect(begin: Offset(1.1, 1.1), end: Offset(1, 1), duration: Duration(milliseconds: 150)),
                             ],
-                          ),
-                        ),
+                            child: Dismissible(
+                              key: ValueKey(doc.id),
+                              direction: DismissDirection.endToStart,
+                              background: Container(
+                                alignment: Alignment.centerRight,
+                                padding: const EdgeInsets.symmetric(horizontal: 12),
+                                color: Colors.red.shade600,
+                                child: const Icon(Icons.delete, color: Colors.white),
+                              ),
+                              confirmDismiss: (direction) async {
+                                return await showDialog(
+                                  context: context,
+                                  builder: (dialogContext) => AlertDialog(
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                    title: Text(
+                                      'Delete Expense?',
+                                      style: GoogleFonts.inter(fontWeight: FontWeight.w600),
+                                    ),
+                                    content: Text(
+                                      'This action cannot be undone.',
+                                      style: GoogleFonts.inter(fontSize: 14),
+                                    ),
+                                    actions: [
+                                      TextButton(
+                                        onPressed: () => Navigator.of(dialogContext).pop(false),
+                                        child: Text(
+                                          'Cancel',
+                                          style: GoogleFonts.inter(color: Colors.grey.shade600),
+                                        ),
+                                      ),
+                                      FilledButton(
+                                        onPressed: () => Navigator.of(dialogContext).pop(true),
+                                        style: FilledButton.styleFrom(
+                                          backgroundColor: Colors.red.shade600,
+                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                        ),
+                                        child: Text(
+                                          'Delete',
+                                          style: GoogleFonts.inter(color: Colors.white),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
+                              onDismissed: (direction) async {
+                                try {
+                                  await FirebaseFirestore.instance.collection('receipts').doc(doc.id).delete();
+                                  homeScreenProvider.removeDoc(doc.id);
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        'Expense deleted',
+                                        style: GoogleFonts.inter(color: Colors.white),
+                                      ),
+                                      backgroundColor: Colors.green.shade600,
+                                    ),
+                                  );
+                                } catch (e) {
+                                  authProvider.showError(context);
+                                  debugPrint('Error deleting expense: $e');
+                                }
+                              },
+                              child: Hero(
+                                tag: 'transaction-${doc.id}',
+                                child: Material(
+                                  color: Colors.white,
+                                  child: InkWell(
+                                    onTap: () {
+                                      debugPrint('Tapped transaction: id=${doc.id}');
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (context) => EditReceiptScreen(
+                                            receiptId: doc.id,
+                                            data: data,
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                    child: IntrinsicHeight(
+                                      child: Card(
+                                        color: Colors.white,
+                                        elevation: 1,
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(14),
+                                          child: Row(
+                                            crossAxisAlignment: CrossAxisAlignment.center,
+                                            children: [
+                                              Expanded(
+                                                child: Column(
+                                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                                  children: [
+                                                    Text(
+                                                      category,
+                                                      style: GoogleFonts.inter(
+                                                        fontSize: 13,
+                                                        fontWeight: FontWeight.w600,
+                                                        color: Colors.indigo.shade700,
+                                                      ),
+                                                      overflow: TextOverflow.ellipsis,
+                                                    ),
+                                                    if (itemListString.isNotEmpty)
+                                                      Text(
+                                                        itemListString,
+                                                        style: GoogleFonts.inter(
+                                                          fontSize: 12,
+                                                          fontWeight: FontWeight.w600,
+                                                          color: Colors.grey.shade800,
+                                                        ),
+                                                        maxLines: 2,
+                                                        overflow: TextOverflow.ellipsis,
+                                                      ),
+                                                  ],
+                                                ),
+                                              ),
+                                              Column(
+                                                mainAxisAlignment: MainAxisAlignment.center,
+                                                crossAxisAlignment: CrossAxisAlignment.end,
+                                                children: [
+                                                  Text(
+                                                    _currencyFormatter.format(total),
+                                                    style: GoogleFonts.inter(
+                                                      fontSize: 13,
+                                                      fontWeight: FontWeight.w700,
+                                                      color: Colors.amber.shade600,
+                                                    ),
+                                                  ),
+                                                  Text(
+                                                    date,
+                                                    style: GoogleFonts.inter(
+                                                      fontSize: 11,
+                                                      color: Colors.grey.shade600,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          );
+                        },
                       ),
-                    ),
-                  );
-                },
+                    ],
+                  ),
+                ),
               ),
             );
           }
@@ -376,19 +380,11 @@ class _TransactionListState extends State<TransactionList> {
 
         return Stack(
           children: [
-            Column(
-              children: [
-                Expanded(child: mainContent),
-              ],
-            ),
+            mainContent,
             if (selectorData.isRecording || selectorData.isProcessing)
-              const Positioned.fill(
-                child: RecordingSection(),
-              ),
+              const RecordingSection(),
             if (selectorData.showSuccessPopup)
-              Positioned.fill(
-                child: SuccessPopUp(savedCount: selectorData.savedExpensesCount),
-              ),
+              SuccessPopUp(savedCount: selectorData.savedExpensesCount),
           ],
         );
       },

@@ -90,7 +90,7 @@ class HomeScreenProvider extends ChangeNotifier {
   void removeDoc(String docId) {
     _allDocs.removeWhere((doc) => doc.id == docId);
     _queryCache.updateAll((key, value) => value..removeWhere((doc) => doc.id == docId));
-    _totalByUser.clear(); // Clear totals to force recalculation
+    updateTotalByUserFromDocs(_allDocs);
     notifyListeners();
   }
 
@@ -157,8 +157,8 @@ class HomeScreenProvider extends ChangeNotifier {
         _allDocs = _queryCache[cacheKey]!;
         _lastDocument = _allDocs.isNotEmpty ? _allDocs.last : null;
         _hasMore = _allDocs.length == _documentsPerPage;
+        updateTotalByUserFromDocs(_allDocs);
         _isLoadingStream = false;
-        _totalByUser = await _calculateTotalsByUser(_allDocs);
         notifyListeners();
         return;
       }
@@ -187,7 +187,7 @@ class HomeScreenProvider extends ChangeNotifier {
           _lastDocument = snapshot.docs.last;
           _hasMore = snapshot.docs.length == _documentsPerPage;
           _queryCache[cacheKey] = List.from(_allDocs);
-          _totalByUser = await _calculateTotalsByUser(_allDocs);
+          updateTotalByUserFromDocs(_allDocs);
         } else {
           _hasMore = false;
           _queryCache[cacheKey] = [];
@@ -202,17 +202,6 @@ class HomeScreenProvider extends ChangeNotifier {
         notifyListeners();
       });
     });
-  }
-
-  Future<Map<String, double>> _calculateTotalsByUser(List<DocumentSnapshot> docs) async {
-    final Map<String, double> totals = {};
-    for (var doc in docs) {
-      final data = doc.data() as Map<String, dynamic>;
-      final userId = data['userId'] as String? ?? 'Unknown';
-      final total = calculateReceiptTotal(data);
-      totals[userId] = (totals[userId] ?? 0.0) + total;
-    }
-    return totals;
   }
 
   Future<void> loadMoreExpenses(BuildContext context, String userId) async {
@@ -248,7 +237,7 @@ class HomeScreenProvider extends ChangeNotifier {
           _lastDocument = snapshot.docs.last;
           _hasMore = snapshot.docs.length == _documentsPerPage;
           _queryCache['${_showWalletReceipts}_${authProvider.walletId}_${_selectedUserFilter ?? "all"}'] = List.from(_allDocs);
-          _totalByUser = await _calculateTotalsByUser(_allDocs);
+          updateTotalByUserFromDocs(_allDocs);
         } else {
           _hasMore = false;
         }
@@ -260,6 +249,26 @@ class HomeScreenProvider extends ChangeNotifier {
         notifyListeners();
       }
     });
+  }
+
+  void updateTotalByUser(Map<String, double> newTotals) {
+    _totalByUser = Map<String, double>.from(newTotals ?? {});
+    debugPrint('Updated totalByUser: $_totalByUser');
+    notifyListeners();
+  }
+
+  void updateTotalByUserFromDocs(List<DocumentSnapshot> docs) {
+    final Map<String, double> tempTotals = {};
+    for (var doc in docs) {
+      final data = doc.data() as Map<String, dynamic>?;
+      if (data == null) continue;
+      final userId = data['userId'] as String? ?? 'Unknown';
+      final total = calculateReceiptTotal(data);
+      tempTotals[userId] = (tempTotals[userId] ?? 0.0) + total;
+    }
+    _totalByUser = tempTotals;
+    debugPrint('Updated totalByUser from docs: $_totalByUser');
+    notifyListeners();
   }
 
   Future<void> saveMultipleToFirestore(List<Map<String, dynamic>> expenses, BuildContext context) async {
