@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 
 class EditReceiptScreen extends StatefulWidget {
   final String receiptId;
@@ -18,22 +19,41 @@ class _EditReceiptScreenState extends State<EditReceiptScreen> {
   late TextEditingController categoryController;
 
   @override
-  void initState() {
-    super.initState();
-    final items = widget.data['item_name'];
-    final prices = widget.data['unit_price'];
+@override
+void initState() {
+  super.initState();
+  final items = widget.data['item_name'];
+  final prices = widget.data['unit_price'];
 
-    itemControllers = (items is List ? items : [items])
-        .map((e) => TextEditingController(text: e.toString()))
-        .toList();
+  // Initialize controllers for items and prices
+  itemControllers = (items is List ? items : [items])
+      .map((e) => TextEditingController(text: e.toString()))
+      .toList();
 
-    priceControllers = (prices is List ? prices : [prices])
-        .map((e) => TextEditingController(text: e.toString()))
-        .toList();
+  priceControllers = (prices is List ? prices : [prices])
+      .map((e) => TextEditingController(text: e.toString()))
+      .toList();
 
-    dateController = TextEditingController(text: widget.data['date_of_purchase'] ?? '');
-    categoryController = TextEditingController(text: widget.data['category'] ?? '');
+  // Handle date_of_purchase correctly
+  final date = widget.data['date_of_purchase'];
+  String formattedDate = '';
+
+  if (date is Timestamp) {
+    // Convert Timestamp to String
+    formattedDate = DateFormat('yyyy-MM-dd').format(date.toDate());
+  } else if (date is String) {
+    // If it's already a String, keep it as is
+    formattedDate = date;
+  } else {
+    // If it's neither, set a default value
+    formattedDate = '';
   }
+
+  // Set the formatted date in the controller
+  dateController = TextEditingController(text: formattedDate);
+  categoryController = TextEditingController(text: widget.data['category'] ?? '');
+}
+
 
 Future<void> saveChanges() async {
   final items = itemControllers.map((c) => c.text.trim()).toList();
@@ -49,22 +69,28 @@ Future<void> saveChanges() async {
     return;
   }
 
-  final parsedPrices = prices.map((e) => double.tryParse(e) ?? 0.0).toList();
+  // Convert date string to DateTime
+  final parsedDate = DateTime.tryParse(date) ?? DateTime.now();
 
+  // Ensure both item_name and unit_price are always stored as lists
   final updatedData = {
-    'item_name': items.length == 1 ? items[0] : items,
-    'unit_price': parsedPrices.length == 1 ? parsedPrices[0] : parsedPrices,
-    'date_of_purchase': date,
+    'item_name': items, // Always store as list, even if there's just one item
+    'unit_price': prices.map((e) => double.tryParse(e) ?? 0.0).toList(), // Convert prices to double
+    'date_of_purchase': Timestamp.fromDate(parsedDate),
     'category': category,
   };
 
+  // Update Firestore with all the values
   await FirebaseFirestore.instance
       .collection('receipts')
       .doc(widget.receiptId)
       .update(updatedData);
 
-  Navigator.pop(context); // Go back after saving
+  // Go back after saving
+  Navigator.pop(context);
 }
+
+
 
 
   @override

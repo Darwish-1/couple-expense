@@ -1,0 +1,3254 @@
+auth provider
+import 'package:couple_expenses/providers/wallet_provider.dart';
+import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:get/get.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:provider/provider.dart';
+
+enum AuthStatus { loading, authenticated, unauthenticated, error }
+
+class AuthProvider extends ChangeNotifier {
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final GoogleSignIn _googleSignIn = GoogleSignIn.instance;
+
+  User? user;
+  String? walletId;
+  AuthStatus status = AuthStatus.loading;
+  String? errorMessage;
+  bool _isInitialized = false;
+  WalletProvider? _walletProvider; // Reference to WalletProvider
+
+  AuthProvider({WalletProvider? walletProvider}) {
+    _walletProvider = walletProvider;
+    _initialize();
+  }
+
+  Future<void> _initialize() async {
+    try {
+      await initGoogleSignIn();
+      await _checkAuthStatus();
+      _isInitialized = true;
+      if (user != null && _walletProvider != null) {
+        print('AuthProvider initialize: Triggering fetchWallet for user ${user!.uid}');
+        await _walletProvider!.fetchWallet(user!.uid);
+      }
+    } catch (e) {
+      status = AuthStatus.error;
+      errorMessage = 'Initialization failed: $e';
+      print('AuthProvider initialize: Error - $e');
+    }
+    notifyListeners();
+  }
+
+  Future<void> waitForInitialization() async {
+    if (!_isInitialized) {
+      await Future.doWhile(() async {
+        await Future.delayed(const Duration(milliseconds: 100));
+        return !_isInitialized;
+      });
+    }
+  }
+
+  Future<void> initGoogleSignIn() async {
+    try {
+      await _googleSignIn.initialize(
+        clientId: '522253883024-cla8rlb3sonuqnokh2jhvairj3iri49t.apps.googleusercontent.com',
+        serverClientId: '522253883024-cla8rlb3sonuqnokh2jhvairj3iri49t.apps.googleusercontent.com',
+      );
+      print('initGoogleSignIn: GoogleSignIn initialized');
+    } catch (e) {
+      errorMessage = 'Failed to initialize GoogleSignIn: $e';
+      status = AuthStatus.error;
+      print('initGoogleSignIn: Error - $e');
+      notifyListeners();
+      throw e;
+    }
+  }
+
+  Future<void> _checkAuthStatus({BuildContext? context}) async {
+    try {
+      user = _auth.currentUser;
+      if (user != null) {
+        await _loadWallet(user!, context: context);
+        status = AuthStatus.authenticated;
+        print('AuthStatus set to authenticated. User UID: ${user!.uid}, Wallet ID: $walletId');
+      } else {
+        status = AuthStatus.unauthenticated;
+        print('AuthStatus set to unauthenticated');
+      }
+    } catch (e) {
+      status = AuthStatus.error;
+      errorMessage = 'Error checking auth status: $e';
+      print('checkAuthStatus: Error - $e');
+      notifyListeners();
+      throw e;
+    }
+  }
+
+  Future<void> signInWithGoogle() async {
+    try {
+      status = AuthStatus.loading;
+      notifyListeners();
+
+      if (!await _googleSignIn.supportsAuthenticate()) {
+        errorMessage = 'Platform does not support Google authenticate()';
+        status = AuthStatus.error;
+        notifyListeners();
+        return;
+      }
+      final GoogleSignInAccount? account = await _googleSignIn.authenticate();
+      if (account == null) {
+        status = AuthStatus.unauthenticated;
+        notifyListeners();
+        return;
+      }
+      final GoogleSignInAuthentication auth = await account.authentication;
+
+      final credential = GoogleAuthProvider.credential(
+        idToken: auth.idToken,
+      );
+
+      final result = await _auth.signInWithCredential(credential);
+      user = result.user;
+
+      if (user == null) {
+        status = AuthStatus.error;
+        errorMessage = 'Firebase user is null';
+        notifyListeners();
+        return;
+      }
+
+      final userDoc = _firestore.collection('users').doc(user!.uid);
+      if (!(await userDoc.get()).exists) {
+        await userDoc.set({
+          'uid': user!.uid,
+          'name': user!.displayName,
+          'email': user!.email,
+          'joinedAt': FieldValue.serverTimestamp(),
+        });
+      }
+
+      final walletsQuery = await _firestore
+          .collection('wallets')
+          .where('members', arrayContains: user!.uid)
+          .limit(1)
+          .get();
+
+      if (walletsQuery.docs.isEmpty) {
+        final walletRef = _firestore.collection('wallets').doc();
+        await walletRef.set({
+          'name': "${user!.displayName}'s Wallet",
+          'members': [user!.uid],
+          'ownerUid': user!.uid,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+        walletId = walletRef.id;
+        print('New wallet created with ID: $walletId');
+      } else {
+        walletId = walletsQuery.docs.first.id;
+        print('Existing wallet found with ID: $walletId');
+      }
+
+      if (_walletProvider != null) {
+        await _walletProvider!.fetchWallet(user!.uid);
+      } else if (Get.context != null) {
+        final walletProvider = Provider.of<WalletProvider>(Get.context!, listen: false);
+        await walletProvider.fetchWallet(user!.uid);
+      }
+
+      status = AuthStatus.authenticated;
+      print('AuthStatus set to authenticated. User UID: ${user!.uid}');
+      notifyListeners();
+    } catch (e) {
+      status = AuthStatus.error;
+      errorMessage = 'Sign-in failed: $e';
+      print('signInWithGoogle: Error - $e');
+      notifyListeners();
+    }
+  }
+
+  Future<void> signOut() async {
+    try {
+      await _googleSignIn.signOut();
+      await _auth.signOut();
+      user = null;
+      walletId = null;
+      status = AuthStatus.unauthenticated;
+      errorMessage = null;
+      print('signOut: User signed out');
+      notifyListeners();
+    } catch (e) {
+      errorMessage = 'Error signing out: $e';
+      print('signOut: Error - $e');
+      notifyListeners();
+    }
+  }
+
+  Future<void> updateWalletId(String? newWalletId) async {
+    walletId = newWalletId;
+    print('updateWalletId: Wallet ID set to $newWalletId');
+    notifyListeners();
+  }
+
+  Future<void> _loadWallet(User user, {BuildContext? context}) async {
+    try {
+      final walletsQuery = await _firestore
+          .collection('wallets')
+          .where('members', arrayContains: user.uid)
+          .limit(1)
+          .get();
+
+      if (walletsQuery.docs.isNotEmpty) {
+        walletId = walletsQuery.docs.first.id;
+        print('loadWallet: Wallet ID loaded - $walletId');
+        if (_walletProvider != null) {
+          await _walletProvider!.fetchWallet(user.uid);
+        } else if (context != null) {
+          final walletProvider = Provider.of<WalletProvider>(context, listen: false);
+          await walletProvider.fetchWallet(user.uid);
+        }
+      } else {
+        walletId = null;
+        print('loadWallet: No wallet found for user ${user.uid}');
+      }
+    } catch (e) {
+      status = AuthStatus.error;
+      errorMessage = 'Error loading wallet: $e';
+      print('loadWallet: Error - $e');
+      notifyListeners();
+    }
+  }
+
+  void showError(BuildContext context) {
+    if (errorMessage != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(errorMessage!),
+            backgroundColor: Colors.redAccent,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      });
+    }
+  }
+}
+Home screen provider
+import 'dart:async';
+import 'dart:io';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:couple_expenses/providers/auth_provider.dart';
+import 'package:couple_expenses/providers/wallet_provider.dart';
+import 'package:couple_expenses/services/gpt_parser.dart';
+import 'package:firebase_auth/firebase_auth.dart' hide AuthProvider;
+import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:intl/intl.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:provider/provider.dart';
+import 'package:record/record.dart';
+
+class HomeScreenProvider extends ChangeNotifier {
+  AudioRecorder? _recorder;
+  bool _isRecording = false;
+  bool _isProcessing = false;
+  bool _isLoadingStream = false;
+  String _transcription = '';
+  String _searchQuery = '';
+  bool _showWalletReceipts = false;
+  bool _showSuccessPopup = false;
+  int _savedExpensesCount = 0;
+  final TextEditingController _walletIdController = TextEditingController();
+  List<DocumentSnapshot> _allDocs = [];
+  StreamSubscription<QuerySnapshot>? _streamSubscription;
+  Map<String, List<DocumentSnapshot>> _queryCache = {};
+  Map<String, String> _userNameCache = {};
+  Map<String, double> _totalByUser = {};
+  String? _currentStreamKey;
+  String? _selectedUserFilter;
+
+  DocumentSnapshot? _lastDocument;
+  bool _hasMore = true;
+  bool _isLoadingMore = false;
+  Timer? _debounceTimer;
+  final int _documentsPerPage = 20;
+
+  bool get isRecording => _isRecording;
+  bool get isProcessing => _isProcessing;
+  bool get isLoadingStream => _isLoadingStream;
+  bool get showSuccessPopup => _showSuccessPopup;
+  int get savedExpensesCount => _savedExpensesCount;
+  String get transcription => _transcription;
+  String get searchQuery => _searchQuery;
+  bool get showWalletReceipts => _showWalletReceipts;
+  TextEditingController get walletIdController => _walletIdController;
+  List<DocumentSnapshot> get allDocs => _allDocs;
+  bool get hasMore => _hasMore;
+  bool get isLoadingMore => _isLoadingMore;
+  String? get selectedUserFilter => _selectedUserFilter;
+  Map<String, double> get totalByUser => _totalByUser;
+
+  void initializeStream(BuildContext context, String userId) {
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    _setupStream(context, userId, authProvider.walletId);
+  }
+
+  void setUserFilter(String? userId, BuildContext context) {
+    _selectedUserFilter = userId;
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    _setupStream(context, authProvider.user!.uid, authProvider.walletId);
+    notifyListeners();
+  }
+
+  void setIsProcessing(bool value) {
+    _isProcessing = value;
+    notifyListeners();
+  }
+
+  void showSuccess(int count) {
+    _savedExpensesCount = count;
+    _showSuccessPopup = true;
+    notifyListeners();
+    Future.delayed(const Duration(seconds: 3), () {
+      hideSuccess();
+    });
+  }
+
+  void hideSuccess() {
+    if (_showSuccessPopup) {
+      _showSuccessPopup = false;
+      _savedExpensesCount = 0;
+      notifyListeners();
+    }
+  }
+
+  void removeDoc(String docId) {
+    _allDocs.removeWhere((doc) => doc.id == docId);
+    _queryCache.updateAll((key, value) => value..removeWhere((doc) => doc.id == docId));
+    updateTotalByUserFromDocs(_allDocs);
+    notifyListeners();
+  }
+
+  Future<String> fetchUserDisplayName(String userId) async {
+    if (_userNameCache.containsKey(userId)) {
+      return _userNameCache[userId]!;
+    }
+
+    try {
+      final currentUser = FirebaseAuth.instance.currentUser;
+      if (currentUser != null && currentUser.uid == userId) {
+        final name = currentUser.displayName ?? currentUser.email?.split('@').first ?? 'Unknown';
+        final firstName = name.split(' ').first.trim();
+        final capitalizedFirstName = firstName.isEmpty
+            ? 'Unknown'
+            : '${firstName[0].toUpperCase()}${firstName.substring(1).toLowerCase()}';
+        _userNameCache[userId] = capitalizedFirstName;
+        return capitalizedFirstName;
+      }
+
+      final userDoc = await FirebaseFirestore.instance.collection('users').doc(userId).get();
+      final data = userDoc.data();
+      String name;
+      if (data != null && data.containsKey('name') && data['name'] != null) {
+        name = data['name'] as String;
+      } else if (data != null && data.containsKey('email') && data['email'] != null) {
+        name = (data['email'] as String).split('@').first;
+      } else {
+        name = 'Unknown';
+      }
+      final firstName = name.split(' ').first.trim();
+      final capitalizedFirstName = firstName.isEmpty
+          ? 'Unknown'
+          : '${firstName[0].toUpperCase()}${firstName.substring(1).toLowerCase()}';
+      _userNameCache[userId] = capitalizedFirstName;
+      return capitalizedFirstName;
+    } catch (e) {
+      debugPrint('Fetch user name error for $userId: $e');
+      _userNameCache[userId] = 'Unknown';
+      return 'Unknown';
+    }
+  }
+
+  void _setupStream(BuildContext context, String userId, String? walletId) async {
+    final newStreamKey = '${_showWalletReceipts}_${walletId}_${_selectedUserFilter ?? "all"}';
+    if (_currentStreamKey == newStreamKey && _streamSubscription != null) {
+      return;
+    }
+
+    _debounceTimer?.cancel();
+    _debounceTimer = Timer(const Duration(milliseconds: 300), () async {
+      _streamSubscription?.cancel();
+      _currentStreamKey = newStreamKey;
+      _allDocs.clear();
+      _lastDocument = null;
+      _hasMore = true;
+      _isLoadingMore = false;
+      _isLoadingStream = true;
+      _totalByUser.clear();
+      notifyListeners();
+
+      final cacheKey = newStreamKey;
+      if (_queryCache.containsKey(cacheKey) && _queryCache[cacheKey]!.isNotEmpty) {
+        _allDocs = _queryCache[cacheKey]!;
+        _lastDocument = _allDocs.isNotEmpty ? _allDocs.last : null;
+        _hasMore = _allDocs.length == _documentsPerPage;
+        updateTotalByUserFromDocs(_allDocs);
+        _isLoadingStream = false;
+        notifyListeners();
+        return;
+      }
+
+      await Future.delayed(const Duration(milliseconds: 50));
+      Query<Map<String, dynamic>> baseQuery;
+
+      if (_showWalletReceipts && walletId != null) {
+        baseQuery = FirebaseFirestore.instance
+            .collection('receipts')
+            .where('walletId', isEqualTo: walletId)
+            .orderBy('created_at', descending: true);
+        if (_selectedUserFilter != null) {
+          baseQuery = baseQuery.where('userId', isEqualTo: _selectedUserFilter);
+        }
+      } else {
+        baseQuery = FirebaseFirestore.instance
+            .collection('receipts')
+            .where('userId', isEqualTo: userId)
+            .orderBy('created_at', descending: true);
+      }
+
+      _streamSubscription = baseQuery.limit(_documentsPerPage).snapshots().listen((snapshot) async {
+        _allDocs = snapshot.docs;
+        if (snapshot.docs.isNotEmpty) {
+          _lastDocument = snapshot.docs.last;
+          _hasMore = snapshot.docs.length == _documentsPerPage;
+          _queryCache[cacheKey] = List.from(_allDocs);
+          updateTotalByUserFromDocs(_allDocs);
+        } else {
+          _hasMore = false;
+          _queryCache[cacheKey] = [];
+          _totalByUser.clear();
+        }
+        _isLoadingStream = false;
+        notifyListeners();
+      }, onError: (e) {
+        _isLoadingStream = false;
+        Provider.of<AuthProvider>(context, listen: false).showError(context);
+        debugPrint('Stream error: $e');
+        notifyListeners();
+      });
+    });
+  }
+
+  Future<void> loadMoreExpenses(BuildContext context, String userId) async {
+    if (!_hasMore || _isLoadingMore) return;
+
+    _debounceTimer?.cancel();
+    _debounceTimer = Timer(const Duration(milliseconds: 300), () async {
+      _isLoadingMore = true;
+      notifyListeners();
+
+      Query<Map<String, dynamic>> baseQuery;
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+
+      if (_showWalletReceipts && authProvider.walletId != null) {
+        baseQuery = FirebaseFirestore.instance
+            .collection('receipts')
+            .where('walletId', isEqualTo: authProvider.walletId)
+            .orderBy('created_at', descending: true);
+        if (_selectedUserFilter != null) {
+          baseQuery = baseQuery.where('userId', isEqualTo: _selectedUserFilter);
+        }
+      } else {
+        baseQuery = FirebaseFirestore.instance
+            .collection('receipts')
+            .where('userId', isEqualTo: userId)
+            .orderBy('created_at', descending: true);
+      }
+
+      try {
+        final snapshot = await baseQuery.startAfterDocument(_lastDocument!).limit(_documentsPerPage).get();
+        if (snapshot.docs.isNotEmpty) {
+          _allDocs.addAll(snapshot.docs);
+          _lastDocument = snapshot.docs.last;
+          _hasMore = snapshot.docs.length == _documentsPerPage;
+          _queryCache['${_showWalletReceipts}_${authProvider.walletId}_${_selectedUserFilter ?? "all"}'] = List.from(_allDocs);
+          updateTotalByUserFromDocs(_allDocs);
+        } else {
+          _hasMore = false;
+        }
+      } catch (e) {
+        Provider.of<AuthProvider>(context, listen: false).showError(context);
+        debugPrint('Load more error: $e');
+      } finally {
+        _isLoadingMore = false;
+        notifyListeners();
+      }
+    });
+  }
+
+  void updateTotalByUser(Map<String, double> newTotals) {
+    _totalByUser = Map<String, double>.from(newTotals ?? {});
+    debugPrint('Updated totalByUser: $_totalByUser');
+    notifyListeners();
+  }
+
+  void updateTotalByUserFromDocs(List<DocumentSnapshot> docs) {
+    final Map<String, double> tempTotals = {};
+    for (var doc in docs) {
+      final data = doc.data() as Map<String, dynamic>?;
+      if (data == null) continue;
+      final userId = data['userId'] as String? ?? 'Unknown';
+      final total = calculateReceiptTotal(data);
+      tempTotals[userId] = (tempTotals[userId] ?? 0.0) + total;
+    }
+    _totalByUser = tempTotals;
+    debugPrint('Updated totalByUser from docs: $_totalByUser');
+    notifyListeners();
+  }
+
+  Future<void> saveMultipleToFirestore(List<Map<String, dynamic>> expenses, BuildContext context) async {
+    if (expenses.isEmpty) {
+      Provider.of<AuthProvider>(context, listen: false).showError(context);
+      return;
+    }
+
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    final userId = authProvider.user?.uid;
+    final walletId = authProvider.walletId;
+    final now = DateTime.now();
+
+    final Map<String, Map<String, dynamic>> groupedExpenses = {};
+
+    for (var expense in expenses) {
+      final parsedDate = GptParser.normalizeDate(expense['date_of_purchase']);
+      final category = expense['category'] ?? 'General';
+      final item_name = expense['item_name'];
+      final unit_price = (expense['unit_price'] as num?)?.toDouble();
+
+      if (item_name == null || unit_price == null) {
+        debugPrint('Skipping expense due to missing item_name or unit_price: $expense');
+        continue;
+      }
+
+      final String dateKey = parsedDate != null ? DateFormat('yyyy-MM-dd').format(parsedDate) : DateFormat('yyyy-MM-dd').format(now);
+      final String groupKey = '$category-$dateKey';
+
+      if (!groupedExpenses.containsKey(groupKey)) {
+        groupedExpenses[groupKey] = {
+          'item_name': [],
+          'unit_price': [],
+          'date_of_purchase': Timestamp.fromDate(parsedDate ?? now),
+          'category': category,
+          'userId': userId,
+          'walletId': walletId,
+          'created_at': Timestamp.fromDate(now),
+        };
+      }
+      (groupedExpenses[groupKey]!['item_name'] as List).add(item_name);
+      (groupedExpenses[groupKey]!['unit_price'] as List).add(unit_price);
+    }
+
+    final batch = FirebaseFirestore.instance.batch();
+    try {
+      for (var entry in groupedExpenses.values) {
+        final docRef = FirebaseFirestore.instance.collection('receipts').doc();
+        batch.set(docRef, entry);
+      }
+       batch.commit();
+      showSuccess(groupedExpenses.length);
+      _setupStream(context, authProvider.user!.uid, authProvider.walletId);
+    } catch (e) {
+      Provider.of<AuthProvider>(context, listen: false).showError(context);
+      debugPrint('Save grouped expenses error: $e');
+    }
+  }
+
+  Future<String> _getTempFilePath() async {
+    final dir = await getTemporaryDirectory();
+    return '${dir.path}/temp_audio_${DateTime.now().millisecondsSinceEpoch}.m4a';
+  }
+
+  Future<void> startRecording(BuildContext context) async {
+    try {
+      _recorder = AudioRecorder();
+      if (await _recorder!.hasPermission()) {
+        final path = await _getTempFilePath();
+        await _recorder!.start(
+          const RecordConfig(
+            encoder: AudioEncoder.aacLc,
+            sampleRate: 16000,
+            bitRate: 64000,
+          ),
+          path: path,
+        );
+        _isRecording = true;
+        _transcription = '';
+        notifyListeners();
+      } else {
+        Provider.of<AuthProvider>(context, listen: false).showError(context);
+      }
+    } catch (e) {
+      Provider.of<AuthProvider>(context, listen: false).showError(context);
+      debugPrint('Start recording error: $e');
+    }
+  }
+
+Future<void> stopRecordingAndProcess(BuildContext context) async {
+  try {
+    if (!_isRecording || _recorder == null) return;
+
+    // 1️⃣ Stop & clean up the recorder
+    _isRecording = false;
+    _isProcessing = true;
+    notifyListeners();
+
+    final path = await _recorder!.stop();
+    await _recorder!.dispose();
+    _recorder = null;
+
+    if (path != null && File(path).existsSync()) {
+      final file = File(path);
+
+      // 🚦 Start timing
+      final sw = Stopwatch()..start();
+
+      // 2️⃣ Transcription
+      final transcript = await GptParser.transcribeAudio(file);
+      print('⏱ Transcribe took ${sw.elapsedMilliseconds}ms');
+
+      // Show interim transcript
+      _transcription = transcript ?? '';
+      notifyListeners();
+
+      // Reset stopwatch for parsing
+      sw
+        ..reset()
+        ..start();
+
+      if (transcript != null && transcript.isNotEmpty) {
+        // 3️⃣ Parsing
+        final expenses = await GptParser.extractStructuredData(transcript);
+        print('⏱ Parse took ${sw.elapsedMilliseconds}ms');
+
+        // Reset for Firestore write
+        sw
+          ..reset()
+          ..start();
+
+        // 4️⃣ Firestore write
+         saveMultipleToFirestore(expenses!, context);
+        print('⏱ Firestore write took ${sw.elapsedMilliseconds}ms');
+
+        // Stop timing
+        sw.stop();
+      } else {
+        Provider.of<AuthProvider>(context, listen: false).showError(context);
+      }
+
+      // Delete temp file
+      await file.delete();
+    } else {
+      Provider.of<AuthProvider>(context, listen: false).showError(context);
+    }
+  } catch (e) {
+    Provider.of<AuthProvider>(context, listen: false).showError(context);
+    debugPrint('Stop recording error: $e');
+  } finally {
+    _isProcessing = false;
+    _recorder?.dispose();
+    _recorder = null;
+    notifyListeners();
+  }
+}
+
+
+  Future<void> _parseAndAddExpense(String transcription, BuildContext context) async {
+    try {
+      final expenses = await GptParser.extractStructuredData(transcription);
+      await saveMultipleToFirestore(expenses!, context);
+    } catch (e) {
+      Provider.of<AuthProvider>(context, listen: false).showError(context);
+      debugPrint('Parse expenses error: $e');
+    }
+  }
+
+  void updateSearchQuery(String query) {
+    _searchQuery = query;
+    notifyListeners();
+  }
+
+  void toggleWalletReceipts(BuildContext context) {
+    _showWalletReceipts = !_showWalletReceipts;
+    _searchQuery = '';
+    _selectedUserFilter = null; // Reset filter when toggling
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    _setupStream(context, authProvider.user!.uid, authProvider.walletId);
+    notifyListeners();
+  }
+
+  Future<void> joinWallet(WalletProvider walletProvider, BuildContext context) async {
+    try {
+      final walletId = _walletIdController.text.trim();
+      if (walletId.isEmpty) {
+        Provider.of<AuthProvider>(context, listen: false).showError(context);
+        return;
+      }
+
+      final success = await walletProvider.joinWallet(
+        walletId,
+        Provider.of<AuthProvider>(context, listen: false).user!.uid,
+        context,
+      );
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(success ? 'Joined wallet successfully' : walletProvider.errorMessage ?? 'Failed to join wallet'),
+          backgroundColor: success ? Colors.green : Colors.red,
+        ),
+      );
+
+      if (success) {
+        _walletIdController.clear();
+        final authProvider = Provider.of<AuthProvider>(context, listen: false);
+        _setupStream(context, authProvider.user!.uid, authProvider.walletId);
+        notifyListeners();
+      }
+    } catch (e) {
+      Provider.of<AuthProvider>(context, listen: false).showError(context);
+      debugPrint('Join wallet error: $e');
+    }
+  }
+
+  static bool matchesSearch(String searchQuery, Map<String, dynamic> data) {
+    final query = searchQuery.toLowerCase();
+    if (query.isEmpty) return true;
+
+    final itemNames = data['item_name'];
+    final category = data['category']?.toString().toLowerCase() ?? '';
+    final date = data['date_of_purchase']?.toString().toLowerCase() ?? '';
+
+    if (itemNames is List && itemNames.any((item) => item.toString().toLowerCase().contains(query))) return true;
+
+    return category.contains(query) || date.contains(query);
+  }
+
+  static double calculateReceiptTotal(Map<String, dynamic> data) {
+    final prices = data['unit_price'];
+    if (prices is List) {
+      return prices.fold(0.0, (sum, price) => sum + (price is num ? price.toDouble() : 0.0));
+    }
+    return 0.0;
+  }
+
+  @override
+  void dispose() {
+    _debounceTimer?.cancel();
+    _recorder?.dispose();
+    _recorder = null;
+    _walletIdController.dispose();
+    _streamSubscription?.cancel();
+    _queryCache.clear();
+    _userNameCache.clear();
+    _totalByUser.clear();
+    super.dispose();
+  }
+}
+
+wallet provider
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:firebase_auth/firebase_auth.dart' hide AuthProvider;
+import 'auth_provider.dart';
+
+class WalletProvider extends ChangeNotifier {
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  String? walletId;
+  String? errorMessage;
+  DocumentSnapshot? wallet;
+  List<Map<String, String>> memberData = [];
+  bool loading = false;
+
+  WalletProvider() {
+    FirebaseAuth.instance.authStateChanges().listen((User? user) {
+      if (user != null) {
+        fetchWallet(user.uid);
+      } else {
+        wallet = null;
+        walletId = null;
+        memberData.clear();
+        notifyListeners();
+      }
+    });
+  }
+
+  Future<bool> createWallet(String userId, String userDisplayName, BuildContext context) async {
+    try {
+      loading = true;
+      notifyListeners();
+      final walletRef = _firestore.collection('wallets').doc();
+      await walletRef.set({
+        'name': "$userDisplayName's Wallet",
+        'members': [userId],
+        'ownerUid': userId,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+
+      walletId = walletRef.id;
+      await Provider.of<AuthProvider>(context, listen: false).updateWalletId(walletId);
+      await fetchWallet(userId);
+      errorMessage = null;
+      loading = false;
+      debugPrint('Wallet created with ID: $walletId');
+      notifyListeners();
+      return true;
+    } catch (e) {
+      errorMessage = 'Failed to create wallet';
+      loading = false;
+      debugPrint('Create wallet error: $e');
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> joinWallet(String walletIdToJoin, String userId, BuildContext context) async {
+    try {
+      loading = true;
+      notifyListeners();
+      final walletRef = _firestore.collection('wallets').doc(walletIdToJoin);
+      final walletDoc = await walletRef.get();
+
+      if (!walletDoc.exists) {
+        errorMessage = 'Wallet not found';
+        loading = false;
+        debugPrint('Wallet not found: $walletIdToJoin');
+        notifyListeners();
+        return false;
+      }
+
+      final members = List<String>.from(walletDoc['members'] ?? []);
+      if (!members.contains(userId)) {
+        members.add(userId);
+        await walletRef.update({'members': members});
+      }
+
+      walletId = walletIdToJoin;
+      await Provider.of<AuthProvider>(context, listen: false).updateWalletId(walletId);
+      await fetchWallet(userId);
+      errorMessage = null;
+      loading = false;
+      debugPrint('Joined wallet with ID: $walletId');
+      notifyListeners();
+      return true;
+    } catch (e) {
+      errorMessage = 'Error joining wallet';
+      loading = false;
+      debugPrint('Join wallet error: $e');
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> addUserByEmail(String email, String walletId, String currentUserId) async {
+    try {
+      loading = true;
+      notifyListeners();
+      final walletRef = _firestore.collection('wallets').doc(walletId);
+      final walletDoc = await walletRef.get();
+      if (!walletDoc.exists) {
+        errorMessage = 'Wallet not found';
+        loading = false;
+        debugPrint('Wallet not found: $walletId');
+        notifyListeners();
+        return false;
+      }
+      if (walletDoc['ownerUid'] != currentUserId) {
+        errorMessage = 'Only the wallet owner can add members';
+        loading = false;
+        debugPrint('Permission denied: Not wallet owner');
+        notifyListeners();
+        return false;
+      }
+
+      final userQuery = await _firestore
+          .collection('users')
+          .where('email', isEqualTo: email)
+          .limit(1)
+          .get();
+
+      if (userQuery.docs.isEmpty) {
+        errorMessage = 'No user found with that email';
+        loading = false;
+        debugPrint('No user found for email: $email');
+        notifyListeners();
+        return false;
+      }
+
+      final uid = userQuery.docs.first['uid'];
+      await walletRef.update({
+        'members': FieldValue.arrayUnion([uid]),
+      });
+
+      await fetchWallet(currentUserId);
+      errorMessage = null;
+      loading = false;
+      debugPrint('User added to wallet: $uid');
+      notifyListeners();
+      return true;
+    } catch (e) {
+      errorMessage = 'Failed to add user';
+      loading = false;
+      debugPrint('Add user error: $e');
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> removeUserByUid(String uidToRemove, String walletId, String currentUserId) async {
+    if (uidToRemove == currentUserId) {
+      errorMessage = "You can't remove yourself";
+      loading = false;
+      debugPrint('Cannot remove self: $uidToRemove');
+      notifyListeners();
+      return false;
+    }
+
+    try {
+      loading = true;
+      notifyListeners();
+      final walletRef = _firestore.collection('wallets').doc(walletId);
+      await walletRef.update({
+        'members': FieldValue.arrayRemove([uidToRemove]),
+      });
+
+      await fetchWallet(currentUserId);
+      errorMessage = null;
+      loading = false;
+      debugPrint('User removed: $uidToRemove');
+      notifyListeners();
+      return true;
+    } catch (e) {
+      errorMessage = 'Failed to remove user';
+      loading = false;
+      debugPrint('Remove user error: $e');
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> leaveWallet(String userId, BuildContext context) async {
+    try {
+      loading = true;
+      notifyListeners();
+      final walletRef = _firestore.collection('wallets').doc(walletId);
+      final walletDoc = await walletRef.get();
+      if (!walletDoc.exists) {
+        errorMessage = 'Wallet not found';
+        loading = false;
+        debugPrint('Wallet not found: $walletId');
+        notifyListeners();
+        return false;
+      }
+
+      if (walletDoc['ownerUid'] == userId && List<String>.from(walletDoc['members'] ?? []).length > 1) {
+        errorMessage = 'Owner cannot leave unless they are the last member';
+        loading = false;
+        debugPrint('Owner cannot leave: $userId');
+        notifyListeners();
+        return false;
+      }
+
+      await walletRef.update({
+        'members': FieldValue.arrayRemove([userId]),
+      });
+
+      final updatedDoc = await walletRef.get();
+      if (updatedDoc.exists && List<String>.from(updatedDoc['members'] ?? []).isEmpty) {
+        final transactions = await _firestore.collection('transactions').where('walletId', isEqualTo: walletId).get();
+        if (transactions.docs.isEmpty) {
+          await walletRef.delete();
+          debugPrint('Wallet deleted: $walletId');
+        }
+      }
+
+      wallet = null;
+      walletId = null;
+      memberData.clear();
+      await Provider.of<AuthProvider>(context, listen: false).updateWalletId(null);
+      errorMessage = null;
+      loading = false;
+      debugPrint('User left wallet: $userId');
+      notifyListeners();
+      return true;
+    } catch (e) {
+      errorMessage = 'Failed to leave wallet';
+      loading = false;
+      debugPrint('Leave wallet error: $e');
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<void> fetchWallet(String userId) async {
+    try {
+      loading = true;
+      notifyListeners();
+      await Future.delayed(const Duration(milliseconds: 50)); // Prevent main thread blocking
+      final query = await _firestore
+          .collection('wallets')
+          .where('members', arrayContains: userId)
+          .limit(1)
+          .get();
+
+      if (query.docs.isNotEmpty) {
+        wallet = query.docs.first;
+        walletId = wallet!.id;
+        await fetchMemberEmails(wallet!['members']);
+        debugPrint('Wallet fetched with ID: $walletId');
+      } else {
+        wallet = null;
+        walletId = null;
+        memberData.clear();
+        debugPrint('No wallet found for user: $userId');
+      }
+      errorMessage = null;
+      loading = false;
+      notifyListeners();
+    } catch (e) {
+      errorMessage = 'Failed to load wallet';
+      loading = false;
+      debugPrint('Fetch wallet error: $e');
+      notifyListeners();
+    }
+  }
+
+  Future<void> fetchMemberEmails(List<dynamic> memberUids) async {
+    memberData.clear();
+    const batchSize = 10;
+    for (var i = 0; i < memberUids.length; i += batchSize) {
+      final batchUids = memberUids.sublist(i, i + batchSize > memberUids.length ? memberUids.length : i + batchSize);
+      try {
+        await Future.delayed(const Duration(milliseconds: 50)); // Prevent main thread blocking
+        final query = await _firestore
+            .collection('users')
+            .where(FieldPath.documentId, whereIn: batchUids)
+            .get();
+        for (var doc in query.docs) {
+          final String email = (doc.data() as Map<String, dynamic>?)?['email']?.toString() ?? 'Unknown User';
+          memberData.add({'uid': doc.id, 'email': email});
+        }
+        debugPrint('Fetched member emails for UIDs: $batchUids');
+      } catch (e) {
+        for (var uid in batchUids) {
+          memberData.add({'uid': uid.toString(), 'email': 'Unknown User'});
+        }
+        debugPrint('Fetch member emails error: $e');
+      }
+    }
+    notifyListeners();
+  }
+}
+edit reciepts screen
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/material.dart';
+
+class EditReceiptScreen extends StatefulWidget {
+  final String receiptId;
+  final Map<String, dynamic> data;
+
+  const EditReceiptScreen({super.key, required this.receiptId, required this.data});
+
+  @override
+  State<EditReceiptScreen> createState() => _EditReceiptScreenState();
+}
+
+class _EditReceiptScreenState extends State<EditReceiptScreen> {
+  late List<TextEditingController> itemControllers;
+  late List<TextEditingController> priceControllers;
+  late TextEditingController dateController;
+  late TextEditingController categoryController;
+
+  @override
+  void initState() {
+    super.initState();
+    final items = widget.data['item_name'];
+    final prices = widget.data['unit_price'];
+
+    itemControllers = (items is List ? items : [items])
+        .map((e) => TextEditingController(text: e.toString()))
+        .toList();
+
+    priceControllers = (prices is List ? prices : [prices])
+        .map((e) => TextEditingController(text: e.toString()))
+        .toList();
+
+    dateController = TextEditingController(text: widget.data['date_of_purchase'] ?? '');
+    categoryController = TextEditingController(text: widget.data['category'] ?? '');
+  }
+
+Future<void> saveChanges() async {
+  final items = itemControllers.map((c) => c.text.trim()).toList();
+  final prices = priceControllers.map((c) => c.text.trim()).toList();
+  final category = categoryController.text.trim();
+  final date = dateController.text.trim();
+
+  // Validate: no empty items or prices
+  if (category.isEmpty || date.isEmpty || items.any((e) => e.isEmpty) || prices.any((e) => e.isEmpty)) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Please fill all fields before saving.')),
+    );
+    return;
+  }
+
+  final parsedPrices = prices.map((e) => double.tryParse(e) ?? 0.0).toList();
+
+  final updatedData = {
+    'item_name': items.length == 1 ? items[0] : items,
+    'unit_price': parsedPrices.length == 1 ? parsedPrices[0] : parsedPrices,
+    'date_of_purchase': date,
+    'category': category,
+  };
+
+  await FirebaseFirestore.instance
+      .collection('receipts')
+      .doc(widget.receiptId)
+      .update(updatedData);
+
+  Navigator.pop(context); // Go back after saving
+}
+
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("Edit Receipt")),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            ListView.builder(
+              shrinkWrap: true,
+              itemCount: itemControllers.length,
+              itemBuilder: (context, index) {
+                return Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: itemControllers[index],
+                        decoration: InputDecoration(labelText: 'Item ${index + 1}'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextField(
+                        controller: priceControllers[index],
+                        keyboardType: TextInputType.number,
+                        decoration: InputDecoration(labelText: 'Price ${index + 1}'),
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+            const SizedBox(height: 20),
+            TextField(
+              controller: dateController,
+              decoration: const InputDecoration(labelText: 'Date of Purchase'),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: categoryController,
+              decoration: const InputDecoration(labelText: 'Category'),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: saveChanges,
+              child: const Text("Save Changes"),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+
+Home screen
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:couple_expenses/providers/auth_provider.dart';
+import 'package:couple_expenses/providers/home_screen_provider.dart';
+import 'package:couple_expenses/screens/analytics_screen.dart';
+import 'package:couple_expenses/screens/wallet_screen.dart';
+import 'package:couple_expenses/widgets/home_screen_widgets/search_and_toggle_card.dart';
+import 'package:couple_expenses/widgets/home_screen_widgets/total_spending_card.dart';
+import 'package:couple_expenses/widgets/home_screen_widgets/transaction_list.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:flutter_animate/flutter_animate.dart';
+
+class HomeScreen extends StatelessWidget {
+  const HomeScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    final userId = authProvider.user?.uid ?? '';
+
+    if (userId.isEmpty) {
+      return const Scaffold(
+        body: Center(child: Text('User not authenticated')),
+      );
+    }
+
+    return _HomeScreenContent(userId: userId);
+  }
+}
+
+class _HomeScreenContent extends StatefulWidget {
+  final String userId;
+
+  const _HomeScreenContent({required this.userId});
+
+  @override
+  __HomeScreenContentState createState() => __HomeScreenContentState();
+}
+
+class __HomeScreenContentState extends State<_HomeScreenContent> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      Provider.of<HomeScreenProvider>(context, listen: false).initializeStream(context, widget.userId);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    final userName = authProvider.user?.displayName?.split(' ').first ?? 'there';
+
+    return Scaffold(
+      backgroundColor: Colors.grey.shade200,
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        elevation: 0,
+        title: Text(
+          'Hi, $userName!',
+          style: GoogleFonts.inter(
+            fontSize: 24,
+            fontWeight: FontWeight.w700,
+            color: Colors.indigo.shade700,
+          ),
+        ),
+        bottom: const PreferredSize(
+          preferredSize: Size.fromHeight(80),
+          child: SearchAndToggleCard(),
+        ),
+      ),
+      body: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+          child: Animate(
+            effects: const [FadeEffect(duration: Duration(milliseconds: 600))],
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TotalSpendingCard(userId: widget.userId),
+                const SizedBox(height: 16),
+                Selector<AuthProvider, String?>(
+                  selector: (_, provider) => provider.walletId,
+                  builder: (context, walletId, _) {
+                    if (walletId == null) {
+                      return Card(
+                        color: Colors.white,
+                        elevation: 2,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            children: [
+                              Text(
+                                'No Wallet Joined',
+                                style: GoogleFonts.inter(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.red.shade600,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                'Join or create a wallet to share expenses.',
+                                style: GoogleFonts.inter(
+                                  fontSize: 14,
+                                  color: Colors.grey.shade600,
+                                ),
+                                textAlign: TextAlign.center,
+                              ),
+                              const SizedBox(height: 12),
+                              FilledButton(
+                                onPressed: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(builder: (_) => const WalletScreen()),
+                                  );
+                                },
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: Colors.indigo.shade700,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                  padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
+                                ),
+                                child: Text(
+                                  'Join Wallet',
+                                  style: GoogleFonts.inter(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    }
+                    return const SizedBox.shrink();
+                  },
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'Recent Expenses',
+                  style: GoogleFonts.inter(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.indigo.shade700,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                TransactionList(userId: widget.userId),
+              ],
+            ),
+          ),
+        ),
+      ),
+      bottomNavigationBar: BottomAppBar(
+        color: Colors.white,
+        elevation: 2,
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceAround,
+          children: [
+            IconButton(
+              icon: Icon(Icons.bar_chart, color: Colors.indigo.shade700),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const AnalyticsScreen()),
+                );
+              },
+              tooltip: 'Analytics',
+            ),
+            IconButton(
+              icon: Icon(Icons.account_balance_wallet, color: Colors.indigo.shade700),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const WalletScreen()),
+                );
+              },
+              tooltip: 'Wallet',
+            ),
+            IconButton(
+              icon: Icon(Icons.logout, color: Colors.indigo.shade700),
+              onPressed: () async {
+                await authProvider.signOut();
+                if (mounted) {
+                  Navigator.pushReplacementNamed(context, '/login');
+                }
+              },
+              tooltip: 'Logout',
+            ),
+          ],
+        ),
+      ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
+      floatingActionButton: Selector<HomeScreenProvider, ({bool isRecording, bool isProcessing})>(
+        selector: (_, provider) => (
+          isRecording: provider.isRecording,
+          isProcessing: provider.isProcessing,
+        ),
+        builder: (context, data, _) => FloatingActionButton(
+          onPressed: data.isRecording || data.isProcessing
+              ? () => Provider.of<HomeScreenProvider>(context, listen: false).stopRecordingAndProcess(context)
+              : () => Provider.of<HomeScreenProvider>(context, listen: false).startRecording(context),
+          backgroundColor: Colors.indigo.shade700,
+          foregroundColor: Colors.white,
+          shape: const CircleBorder(),
+          tooltip: data.isRecording ? 'Stop Recording' : 'Start Recording',
+          child: Icon(data.isRecording ? Icons.stop : Icons.mic, size: 28),
+        ).animate().scale(duration: const Duration(milliseconds: 200)),
+      ),
+    );
+  }
+}
+Login screen
+
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../providers/auth_provider.dart';
+
+class LoginScreen extends StatelessWidget {
+  const LoginScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final authProvider = Provider.of<AuthProvider>(context);
+
+    return FutureBuilder(
+      future: authProvider.waitForInitialization(),
+      builder: (context, snapshot) {
+        // Still initializing (e.g. checking existing sign-in)
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+
+        // Initialization error
+        if (snapshot.hasError) {
+          return Scaffold(
+            body: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Text(
+                    'Initialization error',
+                    style: TextStyle(color: Colors.redAccent, fontSize: 16),
+                  ),
+                  const SizedBox(height: 20),
+                  ElevatedButton(
+                    onPressed: () => Navigator.pushReplacementNamed(context, '/login'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.symmetric(vertical: 15, horizontal: 20),
+                    ),
+                    child: const Text('Retry', style: TextStyle(fontSize: 16)),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
+
+        // If already signed in (e.g. after logout → new login), jump to home
+        if (authProvider.status == AuthStatus.authenticated) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            Navigator.pushReplacementNamed(context, '/home');
+          });
+          // Show a brief spinner while the navigation happens
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+
+        // Otherwise, show the login UI
+        return Scaffold(
+          backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+          body: Center(
+            child: authProvider.status == AuthStatus.loading
+                ? const CircularProgressIndicator(color: Colors.blue)
+                : authProvider.status == AuthStatus.error
+                    ? Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            authProvider.errorMessage ?? 'An error occurred',
+                            style: const TextStyle(color: Colors.redAccent, fontSize: 16),
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 20),
+                          ElevatedButton.icon(
+                            icon: const Icon(Icons.refresh, color: Colors.white),
+                            label: const Text('Retry Sign-In', style: TextStyle(fontSize: 16, color: Colors.white)),
+                            onPressed: authProvider.signInWithGoogle,
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.blue,
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              padding: const EdgeInsets.symmetric(vertical: 15, horizontal: 20),
+                            ),
+                          ),
+                        ],
+                      )
+                    : Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Text(
+                            'Welcome to Expense Tracker',
+                            style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.blue),
+                          ),
+                          const SizedBox(height: 20),
+                          ElevatedButton.icon(
+                            icon: const Icon(Icons.login, color: Colors.white),
+                            label: const Text('Sign in with Google', style: TextStyle(fontSize: 16, color: Colors.white)),
+                            onPressed: () async {
+                              await authProvider.signInWithGoogle();
+                              if (!context.mounted) return;
+                              authProvider.showError(context);
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.blue,
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              padding: const EdgeInsets.symmetric(vertical: 15, horizontal: 20),
+                            ),
+                          ),
+                        ],
+                      ),
+          ),
+        );
+      },
+    );
+  }
+}
+wallet screen
+import 'package:firebase_auth/firebase_auth.dart' hide AuthProvider;
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../providers/auth_provider.dart';
+import '../providers/wallet_provider.dart';
+
+class WalletScreen extends StatefulWidget {
+  const WalletScreen({super.key});
+
+  @override
+  State<WalletScreen> createState() => _WalletScreenState();
+}
+
+class _WalletScreenState extends State<WalletScreen> {
+  final FirebaseAuth _auth = FirebaseAuth.instance;
+  final TextEditingController _walletIdController = TextEditingController();
+  final TextEditingController _inviteEmailController = TextEditingController();
+
+  @override
+  void initState() {
+   super.initState();
+
+  // Delay to ensure context is available
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    final args = ModalRoute.of(context)?.settings.arguments as Map<String, dynamic>?;
+    final walletId = args?['walletId'];
+
+    if (walletId != null) {
+      context.read<WalletProvider>().fetchWallet(walletId);
+    }
+  });
+  }
+
+  @override
+  void dispose() {
+    _walletIdController.dispose();
+    _inviteEmailController.dispose();
+    super.dispose();
+  }
+
+  bool _isValidEmail(String email) {
+    final RegExp emailRegex = RegExp(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$');
+    return emailRegex.hasMatch(email);
+  }
+
+  Future<void> _leaveWallet(WalletProvider walletProvider) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+        title: const Text("Leave Wallet", style: TextStyle(fontWeight: FontWeight.bold)),
+        content: const Text("Are you sure you want to leave this wallet? This action cannot be undone."),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text("Cancel", style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white),
+            child: const Text("Leave"),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      final success = await walletProvider.leaveWallet(_auth.currentUser!.uid, context);
+      _showSnackBar(walletProvider.errorMessage, "Left wallet", success: success);
+    }
+  }
+
+  Future<void> _removeMember(WalletProvider walletProvider, Map<String, String> member) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+        title: const Text("Remove Member", style: TextStyle(fontWeight: FontWeight.bold)),
+        content: Text("Are you sure you want to remove ${member['email']} from this wallet?"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text("Cancel", style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, foregroundColor: Colors.white),
+            child: const Text("Remove"),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      final success = await walletProvider.removeUserByUid(
+        member['uid']!,
+        walletProvider.wallet!.id,
+        _auth.currentUser!.uid,
+      );
+      _showSnackBar(walletProvider.errorMessage, "Member removed", success: success);
+    }
+  }
+
+  void _showSnackBar(String? errorMessage, String successMessage, {bool success = true}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          success ? "✅ $successMessage" : "❌ ${errorMessage ?? 'An error occurred'}",
+          style: const TextStyle(color: Colors.white),
+        ),
+        backgroundColor: success ? Colors.green : Colors.red,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        margin: const EdgeInsets.all(16),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<AuthProvider>(
+      builder: (context, authProvider, _) {
+        if (authProvider.status == AuthStatus.loading) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+        if (authProvider.status == AuthStatus.unauthenticated) {
+          return Scaffold(
+            appBar: AppBar(
+              title: const Text("Your Wallet", style: TextStyle(fontWeight: FontWeight.bold)),
+              centerTitle: true,
+              backgroundColor: Theme.of(context).primaryColor,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              shape: const RoundedRectangleBorder(
+                borderRadius: BorderRadius.vertical(bottom: Radius.circular(20)),
+              ),
+            ),
+            body: Center(
+              child: ElevatedButton.icon(
+                onPressed: () => authProvider.signInWithGoogle(),
+                icon: const Icon(Icons.login, color: Colors.white),
+                label: const Text("Sign in with Google", style: TextStyle(fontSize: 16, color: Colors.white)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.deepPurple,
+                  padding: const EdgeInsets.symmetric(vertical: 15, horizontal: 20),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+            ),
+          );
+        }
+        if (authProvider.status == AuthStatus.error) {
+          return Scaffold(
+            body: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      authProvider.errorMessage ?? 'Authentication error occurred',
+                      style: const TextStyle(color: Colors.redAccent, fontSize: 16),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 20),
+                    ElevatedButton(
+                      onPressed: () => authProvider.signInWithGoogle(),
+                      child: const Text("Retry Sign-In"),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        }
+      return Consumer<WalletProvider>(
+  builder: (context, walletProvider, _) {
+    return Scaffold(
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      appBar: AppBar(
+        title: const Text("Your Wallet", style: TextStyle(fontWeight: FontWeight.bold)),
+        centerTitle: true,
+        backgroundColor: Theme.of(context).primaryColor,
+        foregroundColor: Colors.white,
+        elevation: 0,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(bottom: Radius.circular(20)),
+        ),
+        actions: walletProvider.wallet != null
+            ? [
+                IconButton(
+                  icon: const Icon(Icons.logout_rounded, color: Colors.white),
+                  tooltip: "Leave Wallet",
+                  onPressed: () => _leaveWallet(walletProvider),
+                ),
+              ]
+            : null,
+      ),
+      body: walletProvider.loading
+          ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent))
+          : walletProvider.errorMessage != null
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Text(
+                      walletProvider.errorMessage!,
+                      style: const TextStyle(color: Colors.redAccent, fontSize: 16),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                )
+              : walletProvider.wallet != null
+                  ? _buildWalletDetails(walletProvider, Theme.of(context))
+                  : _buildNoWalletState(walletProvider, Theme.of(context)),
+    );
+  },
+);
+
+      },
+    );
+  }
+
+  Widget _buildWalletDetails(WalletProvider walletProvider, ThemeData theme) {
+    if (walletProvider.wallet == null) {
+      return Center(
+        child: Text(
+          "Wallet data is not available",
+          style: theme.textTheme.bodyMedium?.copyWith(color: Colors.redAccent),
+        ),
+      );
+    }
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            "🎉 Your Wallet",
+            style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold, color: theme.primaryColorDark),
+          ),
+          const SizedBox(height: 20),
+          _buildInfoCard(
+            context,
+            [
+              _buildInfoRow("Wallet ID:", walletProvider.wallet!.id, Icons.credit_card),
+              _buildInfoRow("Wallet Name:", walletProvider.wallet!['name']?.toString() ?? 'Unnamed Wallet', Icons.wallet),
+            ],
+          ),
+          const SizedBox(height: 25),
+          Text(
+            "Members (${walletProvider.memberData.length})",
+            style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold, color: theme.primaryColorDark),
+          ),
+          const SizedBox(height: 15),
+          if (walletProvider.memberData.isEmpty)
+            Text("No members in this wallet yet.", style: theme.textTheme.bodyMedium?.copyWith(color: Colors.grey[600]))
+          else
+            _buildInfoCard(
+              context,
+              walletProvider.memberData.map(
+                (member) => _buildMemberTile(walletProvider, member, theme),
+              ).toList(),
+            ),
+          const SizedBox(height: 30),
+          Text(
+            "Invite New Member",
+            style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold, color: theme.primaryColorDark),
+          ),
+          const SizedBox(height: 15),
+          TextField(
+            controller: _inviteEmailController,
+            keyboardType: TextInputType.emailAddress,
+            decoration: InputDecoration(
+              labelText: "Member's Email",
+              hintText: "Enter email to invite",
+              prefixIcon: const Icon(Icons.email_outlined, color: Colors.deepPurpleAccent),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide.none,
+              ),
+              filled: true,
+              fillColor: Colors.grey[100],
+              contentPadding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
+            ),
+          ),
+          const SizedBox(height: 20),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: () async {
+                final email = _inviteEmailController.text.trim();
+                if (!_isValidEmail(email)) {
+                  _showSnackBar("Please enter a valid email address", "", success: false);
+                  return;
+                }
+                final success = await walletProvider.addUserByEmail(
+                  email,
+                  walletProvider.wallet!.id,
+                  _auth.currentUser!.uid,
+                );
+                _showSnackBar(walletProvider.errorMessage, "User added to wallet", success: success);
+                if (success) {
+                  _inviteEmailController.clear();
+                }
+              },
+              icon: const Icon(Icons.person_add, color: Colors.white),
+              label: const Text("Add to Wallet", style: TextStyle(fontSize: 16, color: Colors.white)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.deepPurpleAccent,
+                padding: const EdgeInsets.symmetric(vertical: 15),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                elevation: 5,
+                shadowColor: Colors.deepPurpleAccent.withOpacity(0.4),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNoWalletState(WalletProvider walletProvider, ThemeData theme) {
+    if (walletProvider.errorMessage != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _showSnackBar(walletProvider.errorMessage, "", success: false);
+      });
+    }
+    return Padding(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.account_balance_wallet_outlined, size: 80, color: theme.primaryColor.withOpacity(0.6)),
+          const SizedBox(height: 20),
+          Text(
+            "You don't have a wallet yet!",
+            style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold, color: theme.primaryColorDark),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 10),
+          Text(
+            "Create a new one or join an existing wallet to get started.",
+            style: theme.textTheme.bodyLarge?.copyWith(color: Colors.grey[600]),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 40),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              onPressed: () async {
+                final success = await walletProvider.createWallet(
+                  _auth.currentUser!.uid,
+                  _auth.currentUser!.displayName ?? 'User',
+                  context,
+                );
+                _showSnackBar(walletProvider.errorMessage, "Wallet created", success: success);
+              },
+              icon: const Icon(Icons.add_circle_outline, color: Colors.white),
+              label: const Text("Create New Wallet", style: TextStyle(fontSize: 16, color: Colors.white)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.deepPurple,
+                padding: const EdgeInsets.symmetric(vertical: 15),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                elevation: 5,
+                shadowColor: Colors.deepPurple.withOpacity(0.4),
+              ),
+            ),
+          ),
+          const SizedBox(height: 25),
+          const Divider(height: 20, thickness: 1, indent: 20, endIndent: 20),
+          const SizedBox(height: 25),
+          TextField(
+            controller: _walletIdController,
+            decoration: InputDecoration(
+              labelText: "Join Wallet by ID",
+              hintText: "Enter Wallet ID",
+              prefixIcon: const Icon(Icons.tag, color: Colors.teal),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide.none,
+              ),
+              filled: true,
+              fillColor: Colors.grey[100],
+              contentPadding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
+            ),
+          ),
+          const SizedBox(height: 20),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () async {
+                final walletId = _walletIdController.text.trim();
+                if (walletId.isEmpty) {
+                  _showSnackBar("Please enter a wallet ID", "", success: false);
+                  return;
+                }
+                final success = await walletProvider.joinWallet(
+                  walletId,
+                  _auth.currentUser!.uid,
+                  context,
+                );
+                _showSnackBar(walletProvider.errorMessage, "Joined wallet", success: success);
+                if (success) {
+                  _walletIdController.clear();
+                }
+              },
+              icon: const Icon(Icons.arrow_circle_right_outlined, color: Colors.teal),
+              label: const Text("Join Wallet", style: TextStyle(fontSize: 16, color: Colors.teal)),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 15),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                side: const BorderSide(color: Colors.teal, width: 2),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInfoCard(BuildContext context, List<Widget> children) {
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: children,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInfoRow(String label, String value, IconData icon) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8.0),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: Colors.grey[600], size: 20),
+          const SizedBox(width: 10),
+          Text(
+            "$label ",
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(fontSize: 16, color: Colors.black87),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMemberTile(WalletProvider walletProvider, Map<String, String> member, ThemeData theme) {
+    final isCurrentUser = member['uid'] == _auth.currentUser!.uid;
+    final isWalletOwner = walletProvider.wallet?['ownerUid'] == _auth.currentUser!.uid;
+
+    return ListTile(
+      leading: CircleAvatar(
+        backgroundColor: Colors.deepPurple.withOpacity(0.1),
+        child: Text(
+          member['email']!.substring(0, 1).toUpperCase(),
+          style: const TextStyle(color: Colors.deepPurple, fontWeight: FontWeight.bold),
+        ),
+      ),
+      title: Text(
+        member['email']!,
+        style: const TextStyle(fontWeight: FontWeight.w500, color: Colors.blueGrey),
+      ),
+      subtitle: isCurrentUser ? const Text("You", style: TextStyle(color: Colors.green, fontSize: 12)) : null,
+      trailing: isWalletOwner && !isCurrentUser
+          ? IconButton(
+              icon: const Icon(Icons.person_remove, color: Colors.redAccent),
+              onPressed: () => _removeMember(walletProvider, member),
+              tooltip: "Remove Member",
+            )
+          : null,
+      onLongPress: isWalletOwner && !isCurrentUser
+          ? () => _removeMember(walletProvider, member)
+          : null,
+      contentPadding: EdgeInsets.zero,
+    );
+  }
+}
+Gpt parses
+import 'dart:io';
+import 'dart:convert';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
+
+class GptParser {
+  static final String _apiKey = dotenv.env['OPENAI_API_KEY'] ?? '';
+  static final String _todayDate =
+      DateTime.now().toIso8601String().split('T').first;
+
+  /// STEP 1: Audio → Text with Whisper-1 (fast & accurate)
+  static Future<String?> transcribeAudio(File audioFile) async {
+    if (_apiKey.isEmpty) {
+      print('OpenAI API key is missing');
+      return null;
+    }
+    final uri = Uri.parse('https://api.openai.com/v1/audio/transcriptions');
+    final req = http.MultipartRequest('POST', uri)
+      ..headers['Authorization'] = 'Bearer $_apiKey'
+      ..fields['model'] = 'whisper-1'
+      ..fields['language'] = 'ar'
+      ..files.add(await http.MultipartFile.fromPath(
+        'file',
+        audioFile.path,
+        contentType: MediaType('audio', 'mpeg'),
+      ));
+
+    final streamed = await req.send();
+    final resp = await http.Response.fromStream(streamed);
+    if (resp.statusCode == 200) {
+      return jsonDecode(resp.body)['text'] as String?;
+    }
+    print('Transcription error ${resp.statusCode}: ${resp.body}');
+    return null;
+  }
+
+  /// STEP 2: Text → Structured using gpt-3.5-turbo + function calling
+  static Future<List<Map<String, dynamic>>?> extractStructuredData(
+      String speechText) async {
+    if (_apiKey.isEmpty) {
+      print('OpenAI API key is missing');
+      return [];
+    }
+
+    final uri = Uri.parse('https://api.openai.com/v1/chat/completions');
+    final body = {
+      'model': 'gpt-3.5-turbo',
+      'messages': [
+        {
+          'role': 'system',
+          'content': '''
+You are an assistant that extracts expense items from casual spoken input in Egyptian Arabic or English.
+For each item, return:
+• item_name: string  
+• unit_price: number  
+• category: one of [Fuel, Food, Health, Beauty, Beverages, Clothing, General]  
+• date_of_purchase: string YYYY-MM-DD (use today if no date)
+
+Map things like:
+- fuel, petrol, بنزين → Fuel  
+- groceries, lunch, مطعم → Food  
+- meds, vitamins → Health  
+- makeup, مستحضرات → Beauty  
+- drinks, coffee → Beverages  
+- clothes, تيشيرت, بنطلون → Clothing  
+- anything else → General  
+
+Return exactly:
+{"expenses":[{…},…]}
+'''
+        },
+        {'role': 'user', 'content': speechText}
+      ],
+      'functions': [
+        {
+          'name': 'extract_expenses',
+          'description': 'Return parsed expenses as JSON.',
+          'parameters': {
+            'type': 'object',
+            'properties': {
+              'expenses': {
+                'type': 'array',
+                'items': {
+                  'type': 'object',
+                  'properties': {
+                    'item_name': {'type': 'string'},
+                    'unit_price': {'type': 'number'},
+                    'category': {'type': 'string'},
+                    'date_of_purchase': {
+                      'type': 'string',
+                      'format': 'date'
+                    }
+                  },
+                  'required': ['item_name', 'unit_price']
+                }
+              }
+            },
+            'required': ['expenses']
+          }
+        }
+      ],
+      'function_call': {'name': 'extract_expenses'},
+      'temperature': 0.2,
+    };
+
+    final resp = await http.post(
+      uri,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $_apiKey',
+      },
+      body: jsonEncode(body),
+    );
+    if (resp.statusCode != 200) {
+      print('GPT parsing error ${resp.statusCode}: ${resp.body}');
+      return [];
+    }
+
+    final decoded = jsonDecode(resp.body) as Map<String, dynamic>;
+    final choice = (decoded['choices'] as List).first as Map<String, dynamic>;
+    final message = choice['message'] as Map<String, dynamic>;
+
+    // Defensive check
+    if (!message.containsKey('function_call')) {
+      print('⚠️ No function_call in response; raw content:\n${message['content']}');
+      return [];
+    }
+
+    final fnCall = message['function_call'] as Map<String, dynamic>;
+    final args = jsonDecode(fnCall['arguments'] as String) as Map<String, dynamic>;
+
+    return (args['expenses'] as List)
+        .whereType<Map<String, dynamic>>()
+        .toList();
+  }
+
+  /// Utility: normalize Firestore Timestamp or String to DateTime
+  static DateTime? normalizeDate(dynamic dateInput) {
+    if (dateInput == null) return DateTime.now();
+    if (dateInput is Timestamp) return dateInput.toDate();
+    if (dateInput is DateTime) return dateInput;
+    if (dateInput is String) {
+      try {
+        return DateTime.parse(dateInput);
+      } catch (_) {}
+    }
+    return DateTime.now();
+  }
+}
+
+recording section
+import 'package:flutter/material.dart';
+import 'package:flutter_animate/flutter_animate.dart';
+import 'package:provider/provider.dart';
+import 'package:couple_expenses/providers/home_screen_provider.dart';
+import 'package:google_fonts/google_fonts.dart';
+
+class MicRecordingIndicator extends StatefulWidget {
+  final bool isRecording;
+  final bool isProcessing;
+
+  const MicRecordingIndicator({
+    super.key,
+    required this.isRecording,
+    required this.isProcessing,
+  });
+
+  @override
+  State<MicRecordingIndicator> createState() => _MicRecordingIndicatorState();
+}
+
+class _MicRecordingIndicatorState extends State<MicRecordingIndicator> {
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.isRecording && !widget.isProcessing) {
+      return const SizedBox.shrink();
+    }
+
+    String statusText = widget.isRecording ? 'Recording...' : 'Processing...';
+    Widget icon = widget.isRecording
+        ? Icon(Icons.mic, size: 48, color: Colors.indigo.shade700).animate().scale(
+  begin:Offset(1.2, 1.2),
+  end: Offset(1, 1),
+  duration: Duration(milliseconds: 300),
+              curve: Curves.easeInOut,
+            )
+        : const CircularProgressIndicator(color: Colors.indigo);
+
+    return Container(
+      color: Colors.transparent,
+      child: Center(
+        child: Animate(
+          effects: const [SlideEffect(begin: Offset(0, 0.5), duration: Duration(milliseconds: 300))],
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              icon,
+              const SizedBox(height: 12),
+              Text(
+                statusText,
+                style: GoogleFonts.inter(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.indigo.shade700,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class RecordingSection extends StatelessWidget {
+  const RecordingSection({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Selector<HomeScreenProvider, ({bool isRecording, bool isProcessing})>(
+      selector: (_, provider) => (
+        isRecording: provider.isRecording,
+        isProcessing: provider.isProcessing,
+      ),
+      builder: (context, data, _) {
+        if (data.isRecording || data.isProcessing) {
+          return MicRecordingIndicator(
+            isRecording: data.isRecording,
+            isProcessing: data.isProcessing,
+          );
+        }
+        return const SizedBox.shrink();
+      },
+    );
+  }
+}
+
+search and toggle card
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:couple_expenses/providers/home_screen_provider.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:flutter_animate/flutter_animate.dart';
+
+class SearchAndToggleCard extends StatelessWidget {
+  const SearchAndToggleCard({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              onChanged: (val) {
+                Provider.of<HomeScreenProvider>(context, listen: false).updateSearchQuery(val);
+                debugPrint('Search query updated: $val');
+              },
+              style: GoogleFonts.inter(color: Colors.grey.shade800),
+              decoration: InputDecoration(
+                hintText: 'Search expenses...',
+                hintStyle: GoogleFonts.inter(color: Colors.grey.shade500),
+                prefixIcon: Icon(Icons.search, color: Colors.indigo.shade700),
+                filled: true,
+                fillColor: Colors.white,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide.none,
+                ),
+                contentPadding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Selector<HomeScreenProvider, ({bool showWalletReceipts, bool isLoadingStream})>(
+            selector: (_, provider) => (
+              showWalletReceipts: provider.showWalletReceipts,
+              isLoadingStream: provider.isLoadingStream,
+            ),
+            builder: (_, data, __) => Tooltip(
+              message: 'Switch between your personal and shared expenses',
+              child: SegmentedButton<bool>(
+                segments: [
+                  ButtonSegment<bool>(
+                    value: false,
+                    label: Text(
+                      'My Expenses',
+                      style: GoogleFonts.inter(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: data.showWalletReceipts ? Colors.grey.shade600 : Colors.amber.shade600,
+                      ),
+                    ),
+                    icon: Icon(
+                      Icons.person,
+                      size: 16,
+                      color: data.showWalletReceipts ? Colors.grey.shade600 : Colors.amber.shade600,
+                    ),
+                  ),
+                  ButtonSegment<bool>(
+                    value: true,
+                    label: Text(
+                      'Shared Expenses',
+                      style: GoogleFonts.inter(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: data.showWalletReceipts ? Colors.amber.shade600 : Colors.grey.shade600,
+                      ),
+                    ),
+                    icon: Icon(
+                      Icons.group,
+                      size: 16,
+                      color: data.showWalletReceipts ? Colors.amber.shade600 : Colors.grey.shade600,
+                    ),
+                  ),
+                ],
+                selected: {data.showWalletReceipts},
+                onSelectionChanged: (newSelection) {
+                  final newValue = newSelection.first;
+                  Provider.of<HomeScreenProvider>(context, listen: false).toggleWalletReceipts(context);
+                  debugPrint('Toggled wallet receipts: showWalletReceipts=$newValue');
+                },
+                style: ButtonStyle(
+                  backgroundColor: WidgetStateProperty.resolveWith((states) {
+                    if (states.contains(WidgetState.selected)) {
+                      return Colors.indigo.shade700;
+                    }
+                    return Colors.white;
+                  }),
+                  foregroundColor: WidgetStateProperty.all(Colors.amber.shade600),
+                  shape: WidgetStateProperty.all(
+                    RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                ),
+              ).animate().slideX(begin: 0.2, end: 0, duration: 200.ms).fadeIn(duration: 200.ms),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+success pop
+import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:flutter_animate/flutter_animate.dart';
+
+class SuccessPopUp extends StatelessWidget {
+  final int savedCount;
+
+  const SuccessPopUp({super.key, required this.savedCount});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: Colors.transparent,
+      child: Center(
+        child: Animate(
+          effects: const [SlideEffect(begin: Offset(0, 0.5), duration: Duration(seconds: 1))],
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.check_circle_outline,
+                size: 60,
+                color: Colors.indigo.shade700,
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Expense Saved!',
+                style: GoogleFonts.inter(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.indigo.shade700,
+                ),
+              ),
+              if (savedCount > 0)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(
+                    '$savedCount expenses processed.',
+                    style: GoogleFonts.inter(
+                      fontSize: 14,
+                      color: Colors.grey.shade600,
+                    ),
+                  ),
+                ),
+              const SizedBox(height: 12),
+              
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+total spending card
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:intl/intl.dart';
+import 'package:couple_expenses/providers/auth_provider.dart';
+import 'package:couple_expenses/providers/home_screen_provider.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:fl_chart/fl_chart.dart';
+import 'package:flutter_animate/flutter_animate.dart';
+
+class TotalSpendingCard extends StatefulWidget {
+  final String userId;
+
+  const TotalSpendingCard({super.key, required this.userId});
+
+  @override
+  State<TotalSpendingCard> createState() => _TotalSpendingCardState();
+}
+
+class _TotalSpendingCardState extends State<TotalSpendingCard> {
+  late NumberFormat _currencyFormatter;
+  bool _showPieChart = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _currencyFormatter = NumberFormat.currency(
+      locale: 'en_US',
+      symbol: 'EGP ',
+      decimalDigits: 2,
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final provider = Provider.of<HomeScreenProvider>(context, listen: false);
+      provider.initializeStream(context, widget.userId);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Selector<HomeScreenProvider, ({
+      bool showWalletReceipts,
+      String? selectedUserFilter,
+      Map<String, double> totalByUser,
+      bool isLoadingStream
+    })>(
+      selector: (_, provider) => (
+        showWalletReceipts: provider.showWalletReceipts,
+        selectedUserFilter: provider.selectedUserFilter,
+        totalByUser: provider.totalByUser,
+        isLoadingStream: provider.isLoadingStream
+      ),
+      builder: (context, selectorData, _) {
+        final authProvider = Provider.of<AuthProvider>(context, listen: false);
+        final homeScreenProvider = Provider.of<HomeScreenProvider>(context, listen: false);
+        final walletId = authProvider.walletId;
+        final currentUserId = authProvider.user?.uid ?? '';
+
+        Stream<QuerySnapshot> getExpensesStream() {
+          Query<Map<String, dynamic>> query;
+          if (selectorData.showWalletReceipts && walletId != null) {
+            query = FirebaseFirestore.instance
+                .collection('receipts')
+                .where('walletId', isEqualTo: walletId)
+                .orderBy('created_at', descending: true);
+            if (selectorData.selectedUserFilter != null) {
+              query = query.where('userId', isEqualTo: selectorData.selectedUserFilter);
+            }
+          } else {
+            query = FirebaseFirestore.instance
+                .collection('receipts')
+                .where('userId', isEqualTo: widget.userId)
+                .orderBy('created_at', descending: true);
+          }
+          return query.snapshots();
+        }
+
+        return Card(
+          color: Colors.white,
+          elevation: 1,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Header
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      selectorData.showWalletReceipts
+                          ? (selectorData.selectedUserFilter == null
+                              ? 'Shared Spending'
+                              : 'Filtered Spending')
+                          : 'My Spending',
+                      style: GoogleFonts.inter(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.indigo.shade700,
+                      ),
+                    ),
+                    if (selectorData.showWalletReceipts && selectorData.selectedUserFilter == null)
+                      FilterChip(
+                        label: Text(
+                          _showPieChart ? 'Show Segments' : 'Show Chart',
+                          style: GoogleFonts.inter(fontSize: 12, color: Colors.white),
+                        ),
+                        backgroundColor: Colors.indigo.shade700,
+                        selected: _showPieChart,
+                        onSelected: (selected) {
+                          setState(() => _showPieChart = selected);
+                        },
+                        tooltip: _showPieChart
+                            ? 'Switch to segment view'
+                            : 'Switch to pie chart view',
+                      ).animate().scale(duration: 200.ms),
+                  ],
+                ),
+                const SizedBox(height: 12),
+
+                // Data area
+                StreamBuilder<QuerySnapshot>(
+                  stream: getExpensesStream(),
+                  builder: (context, snapshot) {
+                    if (selectorData.isLoadingStream ||
+                        snapshot.connectionState == ConnectionState.waiting) {
+                      return const SizedBox(
+                        height: 150,
+                        child: Center(child: CircularProgressIndicator(color: Colors.indigo)),
+                      );
+                    }
+                    if (snapshot.hasError) {
+                      return const SizedBox(
+                        height: 150,
+                        child: Center(
+                          child: Text('Error loading data', style: TextStyle(fontSize: 14, color: Colors.red)),
+                        ),
+                      );
+                    }
+
+                    // Calculate total & count for personal/filtered view
+                    double totalSpending = 0.0;
+                    int numberOfExpenses = 0;
+                    if (snapshot.hasData && snapshot.data!.docs.isNotEmpty) {
+                      final docs = snapshot.data!.docs;
+                      numberOfExpenses = docs.length;
+                      for (var doc in docs) {
+                        final data = doc.data() as Map<String, dynamic>;
+                        totalSpending += HomeScreenProvider.calculateReceiptTotal(data);
+                      }
+                    }
+
+                    // Shared & no filter → override with full-doc totals
+                    if (selectorData.showWalletReceipts && selectorData.selectedUserFilter == null) {
+                      final docs = snapshot.data!.docs;
+                      final totals = <String, double>{};
+                      for (var doc in docs) {
+                        final data = doc.data() as Map<String, dynamic>;
+                        final uid = data['userId'] as String? ?? 'Unknown';
+                        final amt = HomeScreenProvider.calculateReceiptTotal(data);
+                        totals[uid] = (totals[uid] ?? 0) + amt;
+                      }
+                      final youTotal = totals[currentUserId] ?? 0.0;
+                      final other = totals.entries.firstWhere(
+                        (e) => e.key != currentUserId,
+                        orElse: () => const MapEntry('Unknown', 0.0),
+                      );
+                      final partnerId = other.key;
+                      final partnerTotal = other.value;
+
+                      // Pie chart with custom colors
+                      if (_showPieChart) {
+                        final hasAny = (youTotal + partnerTotal) > 0;
+                        return SizedBox(
+                          height: 150,
+                          child: hasAny
+                              ? PieChart(
+                                  PieChartData(
+                                    sections: [
+                                      PieChartSectionData(
+                                        value: youTotal,
+                                        color: Colors.indigo.shade700,
+                                        title: 'You',
+                                        radius: 60,
+                                        titleStyle: GoogleFonts.inter(
+                                          fontSize: 12,
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      if (partnerTotal > 0)
+                                        PieChartSectionData(
+                                          value: partnerTotal,
+                                          color: Colors.teal.shade400,
+                                          title: 'Partner',
+                                          radius: 60,
+                                          titleStyle: GoogleFonts.inter(
+                                            fontSize: 12,
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                    ],
+                                    sectionsSpace: 2,
+                                    centerSpaceRadius: 40,
+                                  ),
+                                )
+                              : const Center(
+                                  child: Text(
+                                    'No spending data',
+                                    style: TextStyle(fontSize: 14, color: Colors.grey),
+                                  ),
+                                ),
+                        );
+                      }
+
+                      // Segmented view
+                      return ConstrainedBox(
+                        constraints: const BoxConstraints(minHeight: 100, maxHeight: 150),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: _buildUserSegment(
+                                context,
+                                label: 'You',
+                                userId: currentUserId,
+                                total: youTotal,
+                                color: Colors.indigo.shade700,
+                                homeScreenProvider: homeScreenProvider,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: FutureBuilder<String>(
+                                future: homeScreenProvider.fetchUserDisplayName(partnerId),
+                                builder: (ctx, nameSnap) {
+                                  final label = nameSnap.data ?? 'Partner';
+                                  return _buildUserSegment(
+                                    context,
+                                    label: label,
+                                    userId: partnerId,
+                                    total: partnerTotal,
+                                    color: Colors.teal.shade400,
+                                    homeScreenProvider: homeScreenProvider,
+                                  );
+                                },
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }
+
+                    // Personal or filtered fallback
+                    return Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _currencyFormatter.format(totalSpending),
+                          style: GoogleFonts.inter(
+                            fontSize: 28,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.indigo.shade700,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          '$numberOfExpenses expenses',
+                          style: GoogleFonts.inter(
+                            fontSize: 14,
+                            color: Colors.grey.shade600,
+                          ),
+                        ),
+                        if (selectorData.selectedUserFilter != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 12),
+                            child: GestureDetector(
+                              onTap: () => homeScreenProvider.setUserFilter(null, context),
+                              child: Chip(
+                                label: Text('Clear Filter',
+                                    style: GoogleFonts.inter(fontSize: 12, color: Colors.white)),
+                                backgroundColor: Colors.indigo.shade700,
+                                padding: const EdgeInsets.symmetric(horizontal: 8),
+                              ),
+                            ),
+                          ),
+                      ],
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildUserSegment(
+    BuildContext context, {
+    required String label,
+    required String userId,
+    required double total,
+    required Color color,
+    required HomeScreenProvider homeScreenProvider,
+  }) {
+    return Hero(
+      tag: 'segment-$userId',
+      child: GestureDetector(
+        onTap: () => homeScreenProvider.setUserFilter(userId, context),
+        child: Card(
+          color: Colors.white,
+          elevation: 1,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          child: Padding(
+            padding: const EdgeInsets.all(6),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(label,
+                    style: GoogleFonts.inter(
+                        fontSize: 11, fontWeight: FontWeight.w600, color: color)),
+                const SizedBox(height: 4),
+                Text(_currencyFormatter.format(total),
+                    style: GoogleFonts.inter(
+                        fontSize: 14, fontWeight: FontWeight.w700, color: color)),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+Transaction List 
+import 'dart:async';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:intl/intl.dart';
+import 'package:couple_expenses/providers/auth_provider.dart';
+import 'package:couple_expenses/providers/home_screen_provider.dart';
+import 'package:couple_expenses/screens/edit_receipt_screen.dart';
+import 'package:couple_expenses/widgets/home_screen_widgets/recording_section.dart';
+import 'package:couple_expenses/widgets/home_screen_widgets/successpop.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:flutter_animate/flutter_animate.dart';
+
+class TransactionList extends StatefulWidget {
+  final String userId;
+
+  const TransactionList({super.key, required this.userId});
+
+  @override
+  _TransactionListState createState() => _TransactionListState();
+}
+
+class _TransactionListState extends State<TransactionList> {
+  final ScrollController _scrollController = ScrollController();
+  late NumberFormat _currencyFormatter;
+  late NumberFormat _itemPriceFormatter;
+  Timer? _debounceTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _currencyFormatter = NumberFormat.currency(
+      locale: 'en_US',
+      symbol: 'EGP ',
+      decimalDigits: 0,
+    );
+    _itemPriceFormatter = NumberFormat.currency(
+      locale: 'en_US',
+      symbol: '',
+      decimalDigits: 0,
+    );
+    _scrollController.addListener(_onScroll);
+  }
+
+  @override
+  void dispose() {
+    _debounceTimer?.cancel();
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _onScroll() {
+    if (_scrollController.position.pixels == _scrollController.position.maxScrollExtent) {
+      _debounceTimer?.cancel();
+      _debounceTimer = Timer(const Duration(milliseconds: 300), () {
+        final homeScreenProvider = Provider.of<HomeScreenProvider>(context, listen: false);
+        if (homeScreenProvider.hasMore && !homeScreenProvider.isLoadingMore) {
+          homeScreenProvider.loadMoreExpenses(context, widget.userId);
+        }
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Selector<HomeScreenProvider, ({List<DocumentSnapshot> allDocs, String searchQuery, bool isRecording, bool isProcessing, bool showSuccessPopup, int savedExpensesCount, bool isLoadingMore, bool hasMore, bool showWalletReceipts, bool isLoadingStream, String? selectedUserFilter})>(
+      selector: (_, provider) => (
+        allDocs: provider.allDocs,
+        searchQuery: provider.searchQuery,
+        isRecording: provider.isRecording,
+        isProcessing: provider.isProcessing,
+        showSuccessPopup: provider.showSuccessPopup,
+        savedExpensesCount: provider.savedExpensesCount,
+        isLoadingMore: provider.isLoadingMore,
+        hasMore: provider.hasMore,
+        showWalletReceipts: provider.showWalletReceipts,
+        isLoadingStream: provider.isLoadingStream,
+        selectedUserFilter: provider.selectedUserFilter,
+      ),
+      builder: (context, selectorData, _) {
+        final authProvider = Provider.of<AuthProvider>(context, listen: false);
+        final homeScreenProvider = Provider.of<HomeScreenProvider>(context, listen: false);
+
+        Widget mainContent;
+
+        if (selectorData.showWalletReceipts && authProvider.walletId == null) {
+          mainContent = SingleChildScrollView(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.account_balance_wallet_outlined, size: 48, color: Colors.grey.shade400),
+                  const SizedBox(height: 8),
+                  Text(
+                    'No Wallet Joined',
+                    style: GoogleFonts.inter(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.grey.shade600,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Join a wallet to view shared expenses.',
+                    style: GoogleFonts.inter(
+                      fontSize: 14,
+                      color: Colors.grey.shade500,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
+            ),
+          );
+        } else if (selectorData.allDocs.isEmpty && (selectorData.isLoadingMore || selectorData.isLoadingStream)) {
+          mainContent = const Center(
+            child: CircularProgressIndicator(color: Colors.indigo),
+          );
+        } else {
+          final docs = selectorData.allDocs.where((doc) {
+            final data = doc.data() as Map<String, dynamic>;
+            return HomeScreenProvider.matchesSearch(selectorData.searchQuery, data);
+          }).toList();
+
+          if (docs.isEmpty) {
+            mainContent = SingleChildScrollView(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.receipt_long, size: 48, color: Colors.grey.shade400),
+                    const SizedBox(height: 8),
+                    Text(
+                      selectorData.searchQuery.isEmpty
+                          ? (selectorData.selectedUserFilter == null
+                              ? 'No expenses recorded.'
+                              : 'No expenses for this user.')
+                          : 'No results for "${selectorData.searchQuery}".',
+                      style: GoogleFonts.inter(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.grey.shade600,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Try recording a new expense.',
+                      style: GoogleFonts.inter(
+                        fontSize: 14,
+                        color: Colors.grey.shade500,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              ),
+            );
+          } else {
+            mainContent = RefreshIndicator(
+              onRefresh: () async {
+                homeScreenProvider.initializeStream(context, widget.userId);
+              },
+              color: Colors.indigo.shade700,
+              child: Card(
+                color: Colors.white,
+                elevation: 1,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                child: Padding(
+                  padding: const EdgeInsets.all(10),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        selectorData.showWalletReceipts ? 'Shared Transactions' : 'My Transactions',
+                        style: GoogleFonts.inter(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.indigo.shade700,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      ListView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        controller: _scrollController,
+                        itemCount: docs.length + (selectorData.isLoadingMore && selectorData.hasMore ? 1 : 0),
+                        itemBuilder: (context, index) {
+                          if (index == docs.length) {
+                            return const Center(child: CircularProgressIndicator(color: Colors.indigo));
+                          }
+
+                          final doc = docs[index];
+                          final data = doc.data() as Map<String, dynamic>;
+                          final itemNames = (data['item_name'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [];
+                          final unitPrices = (data['unit_price'] as List<dynamic>?)?.map((e) => (e as num).toDouble()).toList() ?? [];
+                          final date = (data['date_of_purchase'] is Timestamp)
+                              ? DateFormat('MMM dd').format((data['date_of_purchase'] as Timestamp).toDate())
+                              : (data['date_of_purchase'] ?? 'N/A');
+                          final category = data['category'] ?? 'N/A';
+                          final total = HomeScreenProvider.calculateReceiptTotal(data);
+
+                          String displayTitle = category;
+                          String itemListString = '';
+                          if (itemNames.isNotEmpty) {
+                            itemListString = List.generate(
+                              itemNames.length,
+                              (i) => '${itemNames[i]}(${_itemPriceFormatter.format(unitPrices.length > i ? unitPrices[i] : 0)})',
+                            ).join(', ');
+                          }
+
+                          debugPrint('Transaction item: id=${doc.id}, category=$category, items=$itemListString, total=$total, itemNames=$itemNames, unitPrices=$unitPrices, isGrouped=${itemNames.length > 1}, locale=${_itemPriceFormatter.locale}');
+
+                          return Animate(
+                            effects: const [
+                              FadeEffect(duration: Duration(milliseconds: 150)),
+                              ScaleEffect(begin: Offset(1.1, 1.1), end: Offset(1, 1), duration: Duration(milliseconds: 150)),
+                            ],
+                            child: Dismissible(
+                              key: ValueKey(doc.id),
+                              direction: DismissDirection.endToStart,
+                              background: Container(
+                                alignment: Alignment.centerRight,
+                                padding: const EdgeInsets.symmetric(horizontal: 12),
+                                color: Colors.red.shade600,
+                                child: const Icon(Icons.delete, color: Colors.white),
+                              ),
+                              confirmDismiss: (direction) async {
+                                return await showDialog(
+                                  context: context,
+                                  builder: (dialogContext) => AlertDialog(
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                    title: Text(
+                                      'Delete Expense?',
+                                      style: GoogleFonts.inter(fontWeight: FontWeight.w600),
+                                    ),
+                                    content: Text(
+                                      'This action cannot be undone.',
+                                      style: GoogleFonts.inter(fontSize: 14),
+                                    ),
+                                    actions: [
+                                      TextButton(
+                                        onPressed: () => Navigator.of(dialogContext).pop(false),
+                                        child: Text(
+                                          'Cancel',
+                                          style: GoogleFonts.inter(color: Colors.grey.shade600),
+                                        ),
+                                      ),
+                                      FilledButton(
+                                        onPressed: () => Navigator.of(dialogContext).pop(true),
+                                        style: FilledButton.styleFrom(
+                                          backgroundColor: Colors.red.shade600,
+                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                        ),
+                                        child: Text(
+                                          'Delete',
+                                          style: GoogleFonts.inter(color: Colors.white),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
+                              onDismissed: (direction) async {
+                                try {
+                                  await FirebaseFirestore.instance.collection('receipts').doc(doc.id).delete();
+                                  homeScreenProvider.removeDoc(doc.id);
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                        'Expense deleted',
+                                        style: GoogleFonts.inter(color: Colors.white),
+                                      ),
+                                      backgroundColor: Colors.green.shade600,
+                                    ),
+                                  );
+                                } catch (e) {
+                                  authProvider.showError(context);
+                                  debugPrint('Error deleting expense: $e');
+                                }
+                              },
+                              child: Hero(
+                                tag: 'transaction-${doc.id}',
+                                child: Material(
+                                  color: Colors.white,
+                                  child: InkWell(
+                                    onTap: () {
+                                      debugPrint('Tapped transaction: id=${doc.id}');
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (context) => EditReceiptScreen(
+                                            receiptId: doc.id,
+                                            data: data,
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                    child: IntrinsicHeight(
+                                      child: Card(
+                                        color: Colors.white,
+                                        elevation: 1,
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(14),
+                                          child: Row(
+                                            crossAxisAlignment: CrossAxisAlignment.center,
+                                            children: [
+                                              Expanded(
+                                                child: Column(
+                                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                                  children: [
+                                                    Text(
+                                                      category,
+                                                      style: GoogleFonts.inter(
+                                                        fontSize: 13,
+                                                        fontWeight: FontWeight.w600,
+                                                        color: Colors.indigo.shade700,
+                                                      ),
+                                                      overflow: TextOverflow.ellipsis,
+                                                    ),
+                                                    if (itemListString.isNotEmpty)
+                                                      Text(
+                                                        itemListString,
+                                                        style: GoogleFonts.inter(
+                                                          fontSize: 12,
+                                                          fontWeight: FontWeight.w600,
+                                                          color: Colors.grey.shade800,
+                                                        ),
+                                                        maxLines: 2,
+                                                        overflow: TextOverflow.ellipsis,
+                                                      ),
+                                                  ],
+                                                ),
+                                              ),
+                                              Column(
+                                                mainAxisAlignment: MainAxisAlignment.center,
+                                                crossAxisAlignment: CrossAxisAlignment.end,
+                                                children: [
+                                                  Text(
+                                                    _currencyFormatter.format(total),
+                                                    style: GoogleFonts.inter(
+                                                      fontSize: 13,
+                                                      fontWeight: FontWeight.w700,
+                                                      color: Colors.amber.shade600,
+                                                    ),
+                                                  ),
+                                                  Text(
+                                                    date,
+                                                    style: GoogleFonts.inter(
+                                                      fontSize: 11,
+                                                      color: Colors.grey.shade600,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          }
+        }
+
+        return Stack(
+          children: [
+            mainContent,
+            if (selectorData.isRecording || selectorData.isProcessing)
+              const RecordingSection(),
+            if (selectorData.showSuccessPopup)
+              SuccessPopUp(savedCount: selectorData.savedExpensesCount),
+          ],
+        );
+      },
+    );
+  }
+}
+
+
+Main .dart
+import 'package:couple_expenses/providers/home_screen_provider.dart';
+import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:provider/provider.dart';
+import 'providers/auth_provider.dart';
+import 'providers/wallet_provider.dart';
+import 'screens/login_screen.dart';
+import 'screens/home_screen.dart';
+
+void main() {
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  Future<void> _initializeFirebase() async {
+    await Firebase.initializeApp();
+    try {
+      await dotenv.load(fileName: ".env");
+    } catch (e) {
+      debugPrint('Error loading .env file: $e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder(
+      future: _initializeFirebase(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const MaterialApp(
+            home: Scaffold(
+              body: Center(child: CircularProgressIndicator()),
+            ),
+          );
+        }
+        if (snapshot.hasError) {
+          return MaterialApp(
+            home: Scaffold(
+              body: Center(
+                child: Text('Initialization error: ${snapshot.error}'),
+              ),
+            ),
+          );
+        }
+        return MultiProvider(
+          providers: [
+            ChangeNotifierProvider(create: (_) => WalletProvider()),
+            ChangeNotifierProvider(create: (_) => HomeScreenProvider()),
+            ChangeNotifierProxyProvider<WalletProvider, AuthProvider>(
+              create: (context) => AuthProvider(walletProvider: context.read<WalletProvider>()),
+              update: (context, walletProvider, authProvider) => authProvider ?? AuthProvider(walletProvider: walletProvider),
+            ),
+          ],
+          child: MaterialApp(
+            title: 'Expense Tracker',
+            theme: ThemeData(
+              primarySwatch: Colors.blue,
+              scaffoldBackgroundColor: Colors.grey[100],
+              appBarTheme: const AppBarTheme(
+                elevation: 0,
+                backgroundColor: Colors.blue,
+                foregroundColor: Colors.white,
+              ),
+              elevatedButtonTheme: ElevatedButtonThemeData(
+                style: ElevatedButton.styleFrom(
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  padding: const EdgeInsets.symmetric(vertical: 15),
+                ),
+              ),
+            ),
+            routes: {
+              '/login': (context) => const LoginScreen(),
+              '/home': (context) => const HomeScreen(),
+            },
+            home: Consumer<AuthProvider>(
+              builder: (context, auth, _) {
+                switch (auth.status) {
+                  case AuthStatus.loading:
+                    return const Scaffold(
+                      body: Center(child: CircularProgressIndicator()),
+                    );
+                  case AuthStatus.authenticated:
+                    return const HomeScreen();
+                  case AuthStatus.unauthenticated:
+                    return const LoginScreen();
+                  case AuthStatus.error:
+                    return Scaffold(
+                      body: Center(
+                        child: Text('Error: ${auth.errorMessage ?? "An error occurred"}'),
+                      ),
+                    );
+                  default:
+                    return const LoginScreen();
+                }
+              },
+            ),
+          ),
+        );
+      },
+    );
+  }
+}

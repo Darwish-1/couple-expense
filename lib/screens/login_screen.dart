@@ -12,11 +12,14 @@ class LoginScreen extends StatelessWidget {
     return FutureBuilder(
       future: authProvider.waitForInitialization(),
       builder: (context, snapshot) {
+        // Still initializing (e.g. checking existing sign-in)
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Scaffold(
             body: Center(child: CircularProgressIndicator()),
           );
         }
+
+        // Initialization error
         if (snapshot.hasError) {
           return Scaffold(
             body: Center(
@@ -43,6 +46,19 @@ class LoginScreen extends StatelessWidget {
             ),
           );
         }
+
+        // If already signed in (e.g. after logout → new login), jump to home
+        if (authProvider.status == AuthStatus.authenticated) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            Navigator.pushReplacementNamed(context, '/home');
+          });
+          // Show a brief spinner while the navigation happens
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+
+        // Otherwise, show the login UI
         return Scaffold(
           backgroundColor: Theme.of(context).scaffoldBackgroundColor,
           body: Center(

@@ -57,6 +57,9 @@ dependencies:
   flutter_staggered_animations: ^1.1.1
   confetti: ^0.8.0
   flutter_animate: ^4.5.2
+  flutter_localizations:
+    sdk: flutter
+  flutter_riverpod: ^2.6.1
 dependency_overrides:
   speech_to_text: 7.1.0
 dev_dependencies:

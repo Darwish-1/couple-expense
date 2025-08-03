@@ -12,7 +12,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
 class TransactionList extends StatefulWidget {
-  final String userId;
+  final String userId; // The logged-in user's ID
 
   const TransactionList({super.key, required this.userId});
 
@@ -196,25 +196,26 @@ class _TransactionListState extends State<TransactionList> {
 
                           final doc = docs[index];
                           final data = doc.data() as Map<String, dynamic>;
-                          final itemNames = (data['item_name'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [];
-                          final unitPrices = (data['unit_price'] as List<dynamic>?)?.map((e) => (e as num).toDouble()).toList() ?? [];
-                          final date = (data['date_of_purchase'] is Timestamp)
-                              ? DateFormat('MMM dd').format((data['date_of_purchase'] as Timestamp).toDate())
-                              : (data['date_of_purchase'] ?? 'N/A');
-                          final category = data['category'] ?? 'N/A';
+
+                          // Parse item names and prices
+                          final itemNames = (data['item_name'] is List<dynamic>)
+                              ? (data['item_name'] as List<dynamic>).map((e) => e.toString()).toList()
+                              : [data['item_name'].toString()];
+
+                          final unitPrices = (data['unit_price'] is List<dynamic>)
+                              ? (data['unit_price'] as List<dynamic>)
+                                  .map((e) => double.tryParse(e.toString()) ?? 0.0)
+                                  .toList()
+                              : [double.tryParse(data['unit_price'].toString()) ?? 0.0];
+
                           final total = HomeScreenProvider.calculateReceiptTotal(data);
+                          final category = data['category'] ?? 'N/A';
+                          final userId = data['userId'];  // User who created the expense
 
-                          String displayTitle = category;
-                          String itemListString = '';
-                          if (itemNames.isNotEmpty) {
-                            itemListString = List.generate(
-                              itemNames.length,
-                              (i) => '${itemNames[i]}(${_itemPriceFormatter.format(unitPrices.length > i ? unitPrices[i] : 0)})',
-                            ).join(', ');
-                          }
+                          // Check if the current user is the owner of this expense
+                          final isOwner = userId == widget.userId;
 
-                          debugPrint('Transaction item: id=${doc.id}, category=$category, items=$itemListString, total=$total, itemNames=$itemNames, unitPrices=$unitPrices, isGrouped=${itemNames.length > 1}, locale=${_itemPriceFormatter.locale}');
-
+                          // Disable edit/delete if the user is not the owner
                           return Animate(
                             effects: const [
                               FadeEffect(duration: Duration(milliseconds: 150)),
@@ -222,84 +223,39 @@ class _TransactionListState extends State<TransactionList> {
                             ],
                             child: Dismissible(
                               key: ValueKey(doc.id),
-                              direction: DismissDirection.endToStart,
-                              background: Container(
-                                alignment: Alignment.centerRight,
-                                padding: const EdgeInsets.symmetric(horizontal: 12),
-                                color: Colors.red.shade600,
-                                child: const Icon(Icons.delete, color: Colors.white),
-                              ),
-                              confirmDismiss: (direction) async {
-                                return await showDialog(
-                                  context: context,
-                                  builder: (dialogContext) => AlertDialog(
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                    title: Text(
-                                      'Delete Expense?',
-                                      style: GoogleFonts.inter(fontWeight: FontWeight.w600),
-                                    ),
-                                    content: Text(
-                                      'This action cannot be undone.',
-                                      style: GoogleFonts.inter(fontSize: 14),
-                                    ),
-                                    actions: [
-                                      TextButton(
-                                        onPressed: () => Navigator.of(dialogContext).pop(false),
-                                        child: Text(
-                                          'Cancel',
-                                          style: GoogleFonts.inter(color: Colors.grey.shade600),
-                                        ),
-                                      ),
-                                      FilledButton(
-                                        onPressed: () => Navigator.of(dialogContext).pop(true),
-                                        style: FilledButton.styleFrom(
-                                          backgroundColor: Colors.red.shade600,
-                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                                        ),
-                                        child: Text(
-                                          'Delete',
-                                          style: GoogleFonts.inter(color: Colors.white),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                );
-                              },
-                              onDismissed: (direction) async {
-                                try {
-                                  await FirebaseFirestore.instance.collection('receipts').doc(doc.id).delete();
-                                  homeScreenProvider.removeDoc(doc.id);
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text(
-                                        'Expense deleted',
-                                        style: GoogleFonts.inter(color: Colors.white),
-                                      ),
-                                      backgroundColor: Colors.green.shade600,
-                                    ),
-                                  );
-                                } catch (e) {
-                                  authProvider.showError(context);
-                                  debugPrint('Error deleting expense: $e');
-                                }
-                              },
+                              direction: isOwner ? DismissDirection.endToStart : DismissDirection.none, // Allow delete only if the user is the owner
+                              background: isOwner
+                                  ? Container(
+                                      alignment: Alignment.centerRight,
+                                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                                      color: Colors.red.shade600,
+                                      child: const Icon(Icons.delete, color: Colors.white),
+                                    )
+                                  : null,
+                              onDismissed: isOwner
+                                  ? (direction) async {
+                                      await FirebaseFirestore.instance.collection('receipts').doc(doc.id).delete();
+                                      homeScreenProvider.removeDoc(doc.id);
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(content: Text('Expense deleted')),
+                                      );
+                                    }
+                                  : null,
                               child: Hero(
                                 tag: 'transaction-${doc.id}',
                                 child: Material(
                                   color: Colors.white,
                                   child: InkWell(
-                                    onTap: () {
-                                      debugPrint('Tapped transaction: id=${doc.id}');
-                                      Navigator.push(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder: (context) => EditReceiptScreen(
-                                            receiptId: doc.id,
-                                            data: data,
-                                          ),
-                                        ),
-                                      );
-                                    },
+                                    onTap: isOwner
+                                        ? () {
+                                            Navigator.push(
+                                              context,
+                                              MaterialPageRoute(
+                                                builder: (context) => EditReceiptScreen(receiptId: doc.id, data: data),
+                                              ),
+                                            );
+                                          }
+                                        : null,  // Disable tap for non-owners
                                     child: IntrinsicHeight(
                                       child: Card(
                                         color: Colors.white,
@@ -323,17 +279,15 @@ class _TransactionListState extends State<TransactionList> {
                                                       ),
                                                       overflow: TextOverflow.ellipsis,
                                                     ),
-                                                    if (itemListString.isNotEmpty)
-                                                      Text(
-                                                        itemListString,
-                                                        style: GoogleFonts.inter(
-                                                          fontSize: 12,
-                                                          fontWeight: FontWeight.w600,
-                                                          color: Colors.grey.shade800,
-                                                        ),
-                                                        maxLines: 2,
-                                                        overflow: TextOverflow.ellipsis,
+                                                    Text(
+                                                      itemNames.join(', '),
+                                                      style: GoogleFonts.inter(
+                                                        fontSize: 12,
+                                                        fontWeight: FontWeight.w600,
+                                                        color: Colors.grey.shade800,
                                                       ),
+                                                      overflow: TextOverflow.ellipsis,
+                                                    ),
                                                   ],
                                                 ),
                                               ),
@@ -350,7 +304,9 @@ class _TransactionListState extends State<TransactionList> {
                                                     ),
                                                   ),
                                                   Text(
-                                                    date,
+                                                    data['date_of_purchase'] is Timestamp
+                                                        ? DateFormat('MMM dd').format((data['date_of_purchase'] as Timestamp).toDate())
+                                                        : 'N/A',
                                                     style: GoogleFonts.inter(
                                                       fontSize: 11,
                                                       color: Colors.grey.shade600,

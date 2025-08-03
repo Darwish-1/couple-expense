@@ -1,3 +1,4 @@
+
 import 'dart:async';
 import 'dart:io';
 
@@ -14,6 +15,9 @@ import 'package:provider/provider.dart';
 import 'package:record/record.dart';
 
 class HomeScreenProvider extends ChangeNotifier {
+
+  Stream<QuerySnapshot>? _expensesStream;
+
   AudioRecorder? _recorder;
   bool _isRecording = false;
   bool _isProcessing = false;
@@ -39,6 +43,7 @@ class HomeScreenProvider extends ChangeNotifier {
   final int _documentsPerPage = 20;
 
   bool get isRecording => _isRecording;
+
   bool get isProcessing => _isProcessing;
   bool get isLoadingStream => _isLoadingStream;
   bool get showSuccessPopup => _showSuccessPopup;
@@ -164,7 +169,7 @@ class HomeScreenProvider extends ChangeNotifier {
       }
 
       await Future.delayed(const Duration(milliseconds: 50));
-      Query<Map<String, dynamic>> baseQuery;
+     Query<Map<String, dynamic>> baseQuery;
 
       if (_showWalletReceipts && walletId != null) {
         baseQuery = FirebaseFirestore.instance
@@ -180,8 +185,12 @@ class HomeScreenProvider extends ChangeNotifier {
             .where('userId', isEqualTo: userId)
             .orderBy('created_at', descending: true);
       }
+      
+      // Store the stream in the private variable
+      _expensesStream = baseQuery.limit(_documentsPerPage).snapshots();
 
-      _streamSubscription = baseQuery.limit(_documentsPerPage).snapshots().listen((snapshot) async {
+      // Listen to the new stream
+      _streamSubscription = _expensesStream!.listen((snapshot) async {
         _allDocs = snapshot.docs;
         if (snapshot.docs.isNotEmpty) {
           _lastDocument = snapshot.docs.last;
@@ -358,43 +367,74 @@ class HomeScreenProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> stopRecordingAndProcess(BuildContext context) async {
-    try {
-      if (!_isRecording || _recorder == null) return;
+Future<void> stopRecordingAndProcess(BuildContext context) async {
+  try {
+    if (!_isRecording || _recorder == null) return;
 
-      _isRecording = false;
-      _isProcessing = true;
+    // 1️⃣ Stop & clean up the recorder
+    _isRecording = false;
+    _isProcessing = true;
+    notifyListeners();
+
+    final path = await _recorder!.stop();
+    await _recorder!.dispose();
+    _recorder = null;
+
+    if (path != null && File(path).existsSync()) {
+      final file = File(path);
+
+      // 🚦 Start timing
+      final sw = Stopwatch()..start();
+
+      // 2️⃣ Transcription
+      final transcript = await GptParser.transcribeAudio(file);
+      print('⏱ Transcribe took ${sw.elapsedMilliseconds}ms');
+
+      // Show interim transcript
+      _transcription = transcript ?? '';
       notifyListeners();
 
-      final path = await _recorder!.stop();
-      await _recorder!.dispose();
-      _recorder = null;
+      // Reset stopwatch for parsing
+      sw
+        ..reset()
+        ..start();
 
-      if (path != null && File(path).existsSync()) {
-        final file = File(path);
-        final transcript = await GptParser.transcribeAudio(file);
-        _transcription = transcript ?? '';
-        notifyListeners();
+      if (transcript != null && transcript.isNotEmpty) {
+        // 3️⃣ Parsing
+        final expenses = await GptParser.extractStructuredData(transcript);
+        print('⏱ Parse took ${sw.elapsedMilliseconds}ms');
 
-        if (transcript != null && transcript.isNotEmpty) {
-          await _parseAndAddExpense(transcript, context);
-        } else {
-          Provider.of<AuthProvider>(context, listen: false).showError(context);
-        }
-        await file.delete();
+        // Reset for Firestore write
+        sw
+          ..reset()
+          ..start();
+
+        // 4️⃣ Firestore write
+         saveMultipleToFirestore(expenses!, context);
+        print('⏱ Firestore write took ${sw.elapsedMilliseconds}ms');
+
+        // Stop timing
+        sw.stop();
       } else {
         Provider.of<AuthProvider>(context, listen: false).showError(context);
       }
-    } catch (e) {
+
+      // Delete temp file
+      await file.delete();
+    } else {
       Provider.of<AuthProvider>(context, listen: false).showError(context);
-      debugPrint('Stop recording error: $e');
-    } finally {
-      _isProcessing = false;
-      _recorder?.dispose();
-      _recorder = null;
-      notifyListeners();
     }
+  } catch (e) {
+    Provider.of<AuthProvider>(context, listen: false).showError(context);
+    debugPrint('Stop recording error: $e');
+  } finally {
+    _isProcessing = false;
+    _recorder?.dispose();
+    _recorder = null;
+    notifyListeners();
   }
+}
+
 
   Future<void> _parseAndAddExpense(String transcription, BuildContext context) async {
     try {
