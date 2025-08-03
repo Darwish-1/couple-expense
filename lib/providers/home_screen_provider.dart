@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:couple_expenses/providers/auth_provider.dart';
+import 'package:couple_expenses/providers/transaction_list_provider.dart';
 import 'package:couple_expenses/providers/wallet_provider.dart';
 import 'package:couple_expenses/services/gpt_parser.dart';
 import 'package:firebase_auth/firebase_auth.dart' hide AuthProvider;
@@ -16,7 +17,6 @@ import 'package:record/record.dart';
 
 class HomeScreenProvider extends ChangeNotifier {
 
-  Stream<QuerySnapshot>? _expensesStream;
 
   AudioRecorder? _recorder;
   bool _isRecording = false;
@@ -28,19 +28,9 @@ class HomeScreenProvider extends ChangeNotifier {
   bool _showSuccessPopup = false;
   int _savedExpensesCount = 0;
   final TextEditingController _walletIdController = TextEditingController();
-  List<DocumentSnapshot> _allDocs = [];
-  StreamSubscription<QuerySnapshot>? _streamSubscription;
-  Map<String, List<DocumentSnapshot>> _queryCache = {};
   Map<String, String> _userNameCache = {};
-  Map<String, double> _totalByUser = {};
-  String? _currentStreamKey;
-  String? _selectedUserFilter;
 
-  DocumentSnapshot? _lastDocument;
-  bool _hasMore = true;
-  bool _isLoadingMore = false;
-  Timer? _debounceTimer;
-  final int _documentsPerPage = 20;
+
 
   bool get isRecording => _isRecording;
 
@@ -52,23 +42,10 @@ class HomeScreenProvider extends ChangeNotifier {
   String get searchQuery => _searchQuery;
   bool get showWalletReceipts => _showWalletReceipts;
   TextEditingController get walletIdController => _walletIdController;
-  List<DocumentSnapshot> get allDocs => _allDocs;
-  bool get hasMore => _hasMore;
-  bool get isLoadingMore => _isLoadingMore;
-  String? get selectedUserFilter => _selectedUserFilter;
-  Map<String, double> get totalByUser => _totalByUser;
 
-  void initializeStream(BuildContext context, String userId) {
-    final authProvider = Provider.of<AuthProvider>(context, listen: false);
-    _setupStream(context, userId, authProvider.walletId);
-  }
 
-  void setUserFilter(String? userId, BuildContext context) {
-    _selectedUserFilter = userId;
-    final authProvider = Provider.of<AuthProvider>(context, listen: false);
-    _setupStream(context, authProvider.user!.uid, authProvider.walletId);
-    notifyListeners();
-  }
+
+ 
 
   void setIsProcessing(bool value) {
     _isProcessing = value;
@@ -79,7 +56,7 @@ class HomeScreenProvider extends ChangeNotifier {
     _savedExpensesCount = count;
     _showSuccessPopup = true;
     notifyListeners();
-    Future.delayed(const Duration(seconds: 3), () {
+    Future.delayed(const Duration(seconds: 2), () {
       hideSuccess();
     });
   }
@@ -92,12 +69,6 @@ class HomeScreenProvider extends ChangeNotifier {
     }
   }
 
-  void removeDoc(String docId) {
-    _allDocs.removeWhere((doc) => doc.id == docId);
-    _queryCache.updateAll((key, value) => value..removeWhere((doc) => doc.id == docId));
-    updateTotalByUserFromDocs(_allDocs);
-    notifyListeners();
-  }
 
   Future<String> fetchUserDisplayName(String userId) async {
     if (_userNameCache.containsKey(userId)) {
@@ -139,146 +110,14 @@ class HomeScreenProvider extends ChangeNotifier {
     }
   }
 
-  void _setupStream(BuildContext context, String userId, String? walletId) async {
-    final newStreamKey = '${_showWalletReceipts}_${walletId}_${_selectedUserFilter ?? "all"}';
-    if (_currentStreamKey == newStreamKey && _streamSubscription != null) {
-      return;
-    }
+ 
 
-    _debounceTimer?.cancel();
-    _debounceTimer = Timer(const Duration(milliseconds: 300), () async {
-      _streamSubscription?.cancel();
-      _currentStreamKey = newStreamKey;
-      _allDocs.clear();
-      _lastDocument = null;
-      _hasMore = true;
-      _isLoadingMore = false;
-      _isLoadingStream = true;
-      _totalByUser.clear();
-      notifyListeners();
-
-      final cacheKey = newStreamKey;
-      if (_queryCache.containsKey(cacheKey) && _queryCache[cacheKey]!.isNotEmpty) {
-        _allDocs = _queryCache[cacheKey]!;
-        _lastDocument = _allDocs.isNotEmpty ? _allDocs.last : null;
-        _hasMore = _allDocs.length == _documentsPerPage;
-        updateTotalByUserFromDocs(_allDocs);
-        _isLoadingStream = false;
-        notifyListeners();
-        return;
-      }
-
-      await Future.delayed(const Duration(milliseconds: 50));
-     Query<Map<String, dynamic>> baseQuery;
-
-      if (_showWalletReceipts && walletId != null) {
-        baseQuery = FirebaseFirestore.instance
-            .collection('receipts')
-            .where('walletId', isEqualTo: walletId)
-            .orderBy('created_at', descending: true);
-        if (_selectedUserFilter != null) {
-          baseQuery = baseQuery.where('userId', isEqualTo: _selectedUserFilter);
-        }
-      } else {
-        baseQuery = FirebaseFirestore.instance
-            .collection('receipts')
-            .where('userId', isEqualTo: userId)
-            .orderBy('created_at', descending: true);
-      }
-      
-      // Store the stream in the private variable
-      _expensesStream = baseQuery.limit(_documentsPerPage).snapshots();
-
-      // Listen to the new stream
-      _streamSubscription = _expensesStream!.listen((snapshot) async {
-        _allDocs = snapshot.docs;
-        if (snapshot.docs.isNotEmpty) {
-          _lastDocument = snapshot.docs.last;
-          _hasMore = snapshot.docs.length == _documentsPerPage;
-          _queryCache[cacheKey] = List.from(_allDocs);
-          updateTotalByUserFromDocs(_allDocs);
-        } else {
-          _hasMore = false;
-          _queryCache[cacheKey] = [];
-          _totalByUser.clear();
-        }
-        _isLoadingStream = false;
-        notifyListeners();
-      }, onError: (e) {
-        _isLoadingStream = false;
-        Provider.of<AuthProvider>(context, listen: false).showError(context);
-        debugPrint('Stream error: $e');
-        notifyListeners();
-      });
-    });
-  }
-
-  Future<void> loadMoreExpenses(BuildContext context, String userId) async {
-    if (!_hasMore || _isLoadingMore) return;
-
-    _debounceTimer?.cancel();
-    _debounceTimer = Timer(const Duration(milliseconds: 300), () async {
-      _isLoadingMore = true;
-      notifyListeners();
-
-      Query<Map<String, dynamic>> baseQuery;
-      final authProvider = Provider.of<AuthProvider>(context, listen: false);
-
-      if (_showWalletReceipts && authProvider.walletId != null) {
-        baseQuery = FirebaseFirestore.instance
-            .collection('receipts')
-            .where('walletId', isEqualTo: authProvider.walletId)
-            .orderBy('created_at', descending: true);
-        if (_selectedUserFilter != null) {
-          baseQuery = baseQuery.where('userId', isEqualTo: _selectedUserFilter);
-        }
-      } else {
-        baseQuery = FirebaseFirestore.instance
-            .collection('receipts')
-            .where('userId', isEqualTo: userId)
-            .orderBy('created_at', descending: true);
-      }
-
-      try {
-        final snapshot = await baseQuery.startAfterDocument(_lastDocument!).limit(_documentsPerPage).get();
-        if (snapshot.docs.isNotEmpty) {
-          _allDocs.addAll(snapshot.docs);
-          _lastDocument = snapshot.docs.last;
-          _hasMore = snapshot.docs.length == _documentsPerPage;
-          _queryCache['${_showWalletReceipts}_${authProvider.walletId}_${_selectedUserFilter ?? "all"}'] = List.from(_allDocs);
-          updateTotalByUserFromDocs(_allDocs);
-        } else {
-          _hasMore = false;
-        }
-      } catch (e) {
-        Provider.of<AuthProvider>(context, listen: false).showError(context);
-        debugPrint('Load more error: $e');
-      } finally {
-        _isLoadingMore = false;
-        notifyListeners();
-      }
-    });
-  }
 
   void updateTotalByUser(Map<String, double> newTotals) {
-    _totalByUser = Map<String, double>.from(newTotals ?? {});
-    debugPrint('Updated totalByUser: $_totalByUser');
     notifyListeners();
   }
 
-  void updateTotalByUserFromDocs(List<DocumentSnapshot> docs) {
-    final Map<String, double> tempTotals = {};
-    for (var doc in docs) {
-      final data = doc.data() as Map<String, dynamic>?;
-      if (data == null) continue;
-      final userId = data['userId'] as String? ?? 'Unknown';
-      final total = calculateReceiptTotal(data);
-      tempTotals[userId] = (tempTotals[userId] ?? 0.0) + total;
-    }
-    _totalByUser = tempTotals;
-    debugPrint('Updated totalByUser from docs: $_totalByUser');
-    notifyListeners();
-  }
+  
 
   Future<void> saveMultipleToFirestore(List<Map<String, dynamic>> expenses, BuildContext context) async {
     if (expenses.isEmpty) {
@@ -323,14 +162,26 @@ class HomeScreenProvider extends ChangeNotifier {
     }
 
     final batch = FirebaseFirestore.instance.batch();
+    String? lastCreatedDocId; // Store this for animation
+
     try {
       for (var entry in groupedExpenses.values) {
         final docRef = FirebaseFirestore.instance.collection('receipts').doc();
         batch.set(docRef, entry);
+            lastCreatedDocId ??= docRef.id; // Set the first created doc's ID (could be changed to last if you prefer)
+
       }
       await batch.commit();
+
+
+  if (lastCreatedDocId != null) {
+    Provider.of<TransactionListProvider>(context, listen: false).setLastAddedId(lastCreatedDocId);
+    Future.delayed(const Duration(seconds: 1), () {
+      Provider.of<TransactionListProvider>(context, listen: false).setLastAddedId(null);
+    });
+  }
+
       showSuccess(groupedExpenses.length);
-      _setupStream(context, authProvider.user!.uid, authProvider.walletId);
     } catch (e) {
       Provider.of<AuthProvider>(context, listen: false).showError(context);
       debugPrint('Save grouped expenses error: $e');
@@ -454,9 +305,7 @@ Future<void> stopRecordingAndProcess(BuildContext context) async {
   void toggleWalletReceipts(BuildContext context) {
     _showWalletReceipts = !_showWalletReceipts;
     _searchQuery = '';
-    _selectedUserFilter = null; // Reset filter when toggling
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
-    _setupStream(context, authProvider.user!.uid, authProvider.walletId);
     notifyListeners();
   }
 
@@ -484,7 +333,6 @@ Future<void> stopRecordingAndProcess(BuildContext context) async {
       if (success) {
         _walletIdController.clear();
         final authProvider = Provider.of<AuthProvider>(context, listen: false);
-        _setupStream(context, authProvider.user!.uid, authProvider.walletId);
         notifyListeners();
       }
     } catch (e) {
@@ -506,24 +354,26 @@ Future<void> stopRecordingAndProcess(BuildContext context) async {
     return category.contains(query) || date.contains(query);
   }
 
-  static double calculateReceiptTotal(Map<String, dynamic> data) {
-    final prices = data['unit_price'];
-    if (prices is List) {
-      return prices.fold(0.0, (sum, price) => sum + (price is num ? price.toDouble() : 0.0));
-    }
-    return 0.0;
+static double calculateReceiptTotal(Map<String, dynamic> data) {
+  final prices = data['unit_price'];
+  if (prices is List) {
+    return prices.fold(0.0, (sum, price) => sum + (price is num ? price.toDouble() : 0.0));
+  } else if (prices is num) {
+    return prices.toDouble();
+  } else if (data.containsKey('amount') && data['amount'] is num) {
+    return (data['amount'] as num).toDouble();
   }
-
+  return 0.0;
+}
+void clearCaches() {
+  _userNameCache.clear();
+}
   @override
   void dispose() {
-    _debounceTimer?.cancel();
     _recorder?.dispose();
     _recorder = null;
     _walletIdController.dispose();
-    _streamSubscription?.cancel();
-    _queryCache.clear();
     _userNameCache.clear();
-    _totalByUser.clear();
     super.dispose();
   }
 }

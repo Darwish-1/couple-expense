@@ -1,4 +1,6 @@
-
+import 'package:couple_expenses/providers/transaction_list_provider.dart';
+import 'package:couple_expenses/widgets/home_screen_widgets/recording_section.dart';
+import 'package:couple_expenses/widgets/home_screen_widgets/successpop.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:couple_expenses/providers/auth_provider.dart';
@@ -43,7 +45,9 @@ class __HomeScreenContentState extends State<_HomeScreenContent> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      Provider.of<HomeScreenProvider>(context, listen: false).initializeStream(context, widget.userId);
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      Provider.of<TransactionListProvider>(context, listen: false)
+          .initializeStream(context, widget.userId, authProvider.walletId, false);
     });
   }
 
@@ -70,90 +74,114 @@ class __HomeScreenContentState extends State<_HomeScreenContent> {
           child: SearchAndToggleCard(),
         ),
       ),
-      body: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-          child: Animate(
-            effects: const [FadeEffect(duration: Duration(milliseconds: 600))],
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                TotalSpendingCard(userId: widget.userId),
-                const SizedBox(height: 16),
-                Selector<AuthProvider, String?>(
-                  selector: (_, provider) => provider.walletId,
-                  builder: (context, walletId, _) {
-                    if (walletId == null) {
-                      return Card(
-                        color: Colors.white,
-                        elevation: 2,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        child: Padding(
-                          padding: const EdgeInsets.all(16),
-                          child: Column(
-                            children: [
-                              Text(
-                                'No Wallet Joined',
-                                style: GoogleFonts.inter(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w600,
-                                  color: Colors.red.shade600,
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-                              Text(
-                                'Join or create a wallet to share expenses.',
-                                style: GoogleFonts.inter(
-                                  fontSize: 14,
-                                  color: Colors.grey.shade600,
-                                ),
-                                textAlign: TextAlign.center,
-                              ),
-                              const SizedBox(height: 12),
-                              FilledButton(
-                                onPressed: () {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(builder: (_) => const WalletScreen()),
-                                  );
-                                },
-                                style: FilledButton.styleFrom(
-                                  backgroundColor: Colors.indigo.shade700,
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                                  padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
-                                ),
-                                child: Text(
-                                  'Join Wallet',
-                                  style: GoogleFonts.inter(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w600,
-                                    color: Colors.white,
+      body: Stack(
+        children: [
+          // MAIN CONTENT: Does NOT rebuild unless its own state changes!
+          SingleChildScrollView(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+              child: Animate(
+                effects: const [FadeEffect(duration: Duration(milliseconds: 600))],
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    TotalSpendingCard(userId: widget.userId),
+                    const SizedBox(height: 16),
+                    Selector<AuthProvider, String?>(
+                      selector: (_, provider) => provider.walletId,
+                      builder: (context, walletId, _) {
+                        if (walletId == null) {
+                          return Card(
+                            color: Colors.white,
+                            elevation: 2,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            child: Padding(
+                              padding: const EdgeInsets.all(16),
+                              child: Column(
+                                children: [
+                                  Text(
+                                    'No Wallet Joined',
+                                    style: GoogleFonts.inter(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w600,
+                                      color: Colors.red.shade600,
+                                    ),
                                   ),
-                                ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    'Join or create a wallet to share expenses.',
+                                    style: GoogleFonts.inter(
+                                      fontSize: 14,
+                                      color: Colors.grey.shade600,
+                                    ),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                  const SizedBox(height: 12),
+                                  FilledButton(
+                                    onPressed: () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(builder: (_) => const WalletScreen()),
+                                      );
+                                    },
+                                    style: FilledButton.styleFrom(
+                                      backgroundColor: Colors.indigo.shade700,
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
+                                    ),
+                                    child: Text(
+                                      'Join Wallet',
+                                      style: GoogleFonts.inter(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w600,
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
-                            ],
-                          ),
-                        ),
-                      );
-                    }
-                    return const SizedBox.shrink();
-                  },
+                            ),
+                          );
+                        }
+                        return const SizedBox.shrink();
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Recent Expenses',
+                      style: GoogleFonts.inter(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.indigo.shade700,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    // This widget doesn't care about overlay state!
+                    TransactionList(userId: widget.userId),
+                  ],
                 ),
-                const SizedBox(height: 16),
-                Text(
-                  'Recent Expenses',
-                  style: GoogleFonts.inter(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.indigo.shade700,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                TransactionList(userId: widget.userId),
-              ],
+              ),
             ),
           ),
-        ),
+          // === OVERLAYS: Only these rebuild on overlay state ===
+
+          // Mic / processing overlay
+          const RecordingSection(),
+
+          // Success popup overlay
+          Selector<HomeScreenProvider, ({bool showSuccessPopup, int savedExpensesCount})>(
+            selector: (_, provider) => (
+              showSuccessPopup: provider.showSuccessPopup,
+              savedExpensesCount: provider.savedExpensesCount,
+            ),
+            builder: (context, data, _) {
+              if (data.showSuccessPopup) {
+                return SuccessPopUp(savedCount: data.savedExpensesCount);
+              }
+              return const SizedBox.shrink();
+            },
+          ),
+        ],
       ),
       bottomNavigationBar: BottomAppBar(
         color: Colors.white,

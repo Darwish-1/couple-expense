@@ -24,6 +24,7 @@ class _MicRecordingIndicatorState extends State<MicRecordingIndicator> {
     if (!widget.isRecording && !widget.isProcessing) {
       return const SizedBox.shrink();
     }
+  print("MicRecordingIndicator - isRecording: ${widget.isRecording}, isProcessing: ${widget.isProcessing}");
 
     String statusText = widget.isRecording ? 'Recording...' : 'Processing...';
     Widget icon = widget.isRecording
@@ -66,12 +67,15 @@ class RecordingSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    
     return Selector<HomeScreenProvider, ({bool isRecording, bool isProcessing})>(
       selector: (_, provider) => (
         isRecording: provider.isRecording,
         isProcessing: provider.isProcessing,
       ),
       builder: (context, data, _) {
+        print("isRecording: ${data.isRecording}, isProcessing: ${data.isProcessing}");
+
         if (data.isRecording || data.isProcessing) {
           return MicRecordingIndicator(
             isRecording: data.isRecording,

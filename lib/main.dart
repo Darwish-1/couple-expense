@@ -1,4 +1,5 @@
 import 'package:couple_expenses/providers/home_screen_provider.dart';
+import 'package:couple_expenses/providers/transaction_list_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
@@ -46,14 +47,15 @@ class MyApp extends StatelessWidget {
           );
         }
         return MultiProvider(
-          providers: [
-            ChangeNotifierProvider(create: (_) => WalletProvider()),
-            ChangeNotifierProvider(create: (_) => HomeScreenProvider()),
-            ChangeNotifierProxyProvider<WalletProvider, AuthProvider>(
-              create: (context) => AuthProvider(walletProvider: context.read<WalletProvider>()),
-              update: (context, walletProvider, authProvider) => authProvider ?? AuthProvider(walletProvider: walletProvider),
-            ),
-          ],
+           providers: [
+    ChangeNotifierProvider(create: (_) => WalletProvider()),
+    ChangeNotifierProvider(create: (_) => HomeScreenProvider()),
+    ChangeNotifierProvider(create: (_) => TransactionListProvider()), // <-- Add this line
+    ChangeNotifierProxyProvider<WalletProvider, AuthProvider>(
+      create: (context) => AuthProvider(walletProvider: context.read<WalletProvider>()),
+      update: (context, walletProvider, authProvider) => authProvider ?? AuthProvider(walletProvider: walletProvider),
+    ),
+  ],
           child: MaterialApp(
             title: 'Expense Tracker',
             theme: ThemeData(
