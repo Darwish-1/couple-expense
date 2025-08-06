@@ -1,7 +1,12 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:couple_expenses/providers/month_selection_provider.dart';
 import 'package:couple_expenses/providers/transaction_list_provider.dart';
+import 'package:couple_expenses/screens/month_picker.dart';
+import 'package:couple_expenses/widgets/home_screen_widgets/monthly_transaction_list.dart';
 import 'package:couple_expenses/widgets/home_screen_widgets/recording_section.dart';
 import 'package:couple_expenses/widgets/home_screen_widgets/successpop.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:couple_expenses/providers/auth_provider.dart';
 import 'package:couple_expenses/providers/home_screen_provider.dart';
@@ -9,9 +14,9 @@ import 'package:couple_expenses/screens/analytics_screen.dart';
 import 'package:couple_expenses/screens/wallet_screen.dart';
 import 'package:couple_expenses/widgets/home_screen_widgets/search_and_toggle_card.dart';
 import 'package:couple_expenses/widgets/home_screen_widgets/total_spending_card.dart';
-import 'package:couple_expenses/widgets/home_screen_widgets/transaction_list.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -55,6 +60,7 @@ class __HomeScreenContentState extends State<_HomeScreenContent> {
   Widget build(BuildContext context) {
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     final userName = authProvider.user?.displayName?.split(' ').first ?? 'there';
+    final walletId = authProvider.walletId;
 
     return Scaffold(
       backgroundColor: Colors.grey.shade200,
@@ -72,11 +78,14 @@ class __HomeScreenContentState extends State<_HomeScreenContent> {
         bottom: const PreferredSize(
           preferredSize: Size.fromHeight(80),
           child: SearchAndToggleCard(),
+          
         ),
+        
       ),
+      
       body: Stack(
         children: [
-          // MAIN CONTENT: Does NOT rebuild unless its own state changes!
+          
           SingleChildScrollView(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
@@ -143,32 +152,50 @@ class __HomeScreenContentState extends State<_HomeScreenContent> {
                             ),
                           );
                         }
-                        return const SizedBox.shrink();
+                        return Column(
+                          children: [
+                            Consumer<MonthSelectionProvider>(
+                              builder: (context, monthProvider, _) {
+                                final selectedMonth = monthProvider.selectedMonth;
+                                final selectedYear = monthProvider.selectedYear;
+
+                                return ElevatedButton(
+                                  onPressed: () {
+                                    showDialog(
+                                      context: context,
+                                      builder: (BuildContext context) {
+                                        return MonthPickerDialog();
+                                      },
+                                    );
+                                  },
+                                  child: Text("$selectedMonth $selectedYear"),
+                                );
+                              },
+                            ),
+                            const SizedBox(height: 16),
+                            Text(
+                              'Recent Expenses',
+                              style: GoogleFonts.inter(
+                                fontSize: 20,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.indigo.shade700,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            MonthlyTransactionList(
+                              userId: widget.userId,
+                             
+                            ),
+                          ],
+                        );
                       },
                     ),
-                    const SizedBox(height: 16),
-                    Text(
-                      'Recent Expenses',
-                      style: GoogleFonts.inter(
-                        fontSize: 20,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.indigo.shade700,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    // This widget doesn't care about overlay state!
-                    TransactionList(userId: widget.userId),
                   ],
                 ),
               ),
             ),
           ),
-          // === OVERLAYS: Only these rebuild on overlay state ===
-
-          // Mic / processing overlay
           const RecordingSection(),
-
-          // Success popup overlay
           Selector<HomeScreenProvider, ({bool showSuccessPopup, int savedExpensesCount})>(
             selector: (_, provider) => (
               showSuccessPopup: provider.showSuccessPopup,

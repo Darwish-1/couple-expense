@@ -1,6 +1,9 @@
+// lib/screens/total_spending_card.dart
+
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:couple_expenses/providers/home_screen_provider.dart';
 import 'package:couple_expenses/providers/auth_provider.dart';
+import 'package:couple_expenses/providers/home_screen_provider.dart';
+import 'package:couple_expenses/providers/month_selection_provider.dart';
 import 'package:couple_expenses/providers/transaction_list_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -30,70 +33,94 @@ class _TotalSpendingCardState extends State<TotalSpendingCard> {
       symbol: 'EGP ',
       decimalDigits: 2,
     );
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final transactionProvider = Provider.of<TransactionListProvider>(context, listen: false);
-      final homeScreenProvider = Provider.of<HomeScreenProvider>(context, listen: false);
-      final authProvider = Provider.of<AuthProvider>(context, listen: false);
-      transactionProvider.initializeStream(
-        context,
-        widget.userId,
-        authProvider.walletId,
-        homeScreenProvider.showWalletReceipts,
-      );
-    });
+    // We no longer need to initializeStream here, since we're querying directly
+  }
+
+  /// Parses "8" → 8, "August" → 8, etc.
+  int _monthFromString(String month) {
+    final m = int.tryParse(month);
+    if (m != null && m >= 1 && m <= 12) return m;
+
+    const names = {
+      'january': 1,
+      'february': 2,
+      'march': 3,
+      'april': 4,
+      'may': 5,
+      'june': 6,
+      'july': 7,
+      'august': 8,
+      'september': 9,
+      'october': 10,
+      'november': 11,
+      'december': 12,
+    };
+    return names[month.toLowerCase()] ?? DateTime.now().month;
   }
 
   @override
   Widget build(BuildContext context) {
-    final homeScreenProvider = Provider.of<HomeScreenProvider>(context);
-    final transactionProvider = Provider.of<TransactionListProvider>(context);
-    final authProvider = Provider.of<AuthProvider>(context, listen: false);
-    final walletId = authProvider.walletId;
-    final currentUserId = authProvider.user?.uid ?? '';
+    final homeProv        = context.watch<HomeScreenProvider>();
+    final txnProv         = context.watch<TransactionListProvider>();
+    final authProv        = context.watch<AuthProvider>();
+    final walletId        = authProv.walletId;
+    final currentUserId   = authProv.user?.uid ?? '';
 
+    // Read selected month/year
+    final monthProv  = context.watch<MonthSelectionProvider>();
+    final monthStr   = monthProv.selectedMonth;
+    final year       = monthProv.selectedYear;
+    final monthNum   = _monthFromString(monthStr);
+    final startOfMonth = DateTime(year, monthNum, 1);
+    final endOfMonth   = DateTime(year, monthNum + 1, 0, 23, 59, 59);
+
+    // Build a Firestore query scoped to that date range
     Stream<QuerySnapshot> getExpensesStream() {
-      Query<Map<String, dynamic>> query;
+      Query<Map<String, dynamic>> query = FirebaseFirestore.instance
+        .collection('receipts')
+        .where(
+          'date_of_purchase',
+          isGreaterThanOrEqualTo: Timestamp.fromDate(startOfMonth),
+        )
+        .where(
+          'date_of_purchase',
+          isLessThanOrEqualTo: Timestamp.fromDate(endOfMonth),
+        );
 
-      if (homeScreenProvider.showWalletReceipts && walletId != null) {
-        query = FirebaseFirestore.instance
-            .collection('receipts')
-            .where('walletId', isEqualTo: walletId)
-            .orderBy('created_at', descending: true);
-
-        if (transactionProvider.selectedUserFilter != null) {
+      if (homeProv.showWalletReceipts && walletId != null) {
+        query = query
+            .where('walletId', isEqualTo: walletId);
+        if (txnProv.selectedUserFilter != null) {
           query = query.where(
             'userId',
-            isEqualTo: transactionProvider.selectedUserFilter,
+            isEqualTo: txnProv.selectedUserFilter,
           );
         }
       } else {
-        query = FirebaseFirestore.instance
-            .collection('receipts')
-            .where('userId', isEqualTo: widget.userId)
-            .orderBy('created_at', descending: true);
+        query = query.where('userId', isEqualTo: widget.userId);
       }
 
-      return query.snapshots();
+      // Order by date_of_purchase so our charts and totals are chronological
+      return query.orderBy('date_of_purchase', descending: true).snapshots();
     }
 
     return Card(
       color: Colors.white,
       elevation: 1,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-      ),
+      shape:
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Header
+            // Header row
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
-                  homeScreenProvider.showWalletReceipts
-                      ? (transactionProvider.selectedUserFilter == null
+                  homeProv.showWalletReceipts
+                      ? (txnProv.selectedUserFilter == null
                           ? 'Shared Spending'
                           : 'Filtered Spending')
                       : 'My Spending',
@@ -103,20 +130,17 @@ class _TotalSpendingCardState extends State<TotalSpendingCard> {
                     color: Colors.indigo.shade700,
                   ),
                 ),
-                if (homeScreenProvider.showWalletReceipts &&
-                    transactionProvider.selectedUserFilter == null)
+                if (homeProv.showWalletReceipts &&
+                    txnProv.selectedUserFilter == null)
                   FilterChip(
                     label: Text(
                       _showPieChart ? 'Show Segments' : 'Show Chart',
-                      style: GoogleFonts.inter(
-                        fontSize: 12,
-                        color: Colors.white,
-                      ),
+                      style: GoogleFonts.inter(fontSize: 12, color: Colors.white),
                     ),
                     backgroundColor: Colors.indigo.shade700,
                     selected: _showPieChart,
-                    onSelected: (selected) {
-                      setState(() => _showPieChart = selected);
+                    onSelected: (sel) {
+                      setState(() => _showPieChart = sel);
                     },
                     tooltip: _showPieChart
                         ? 'Switch to segment view'
@@ -125,73 +149,58 @@ class _TotalSpendingCardState extends State<TotalSpendingCard> {
               ],
             ),
             const SizedBox(height: 12),
-            // Data area
+
+            // Stream of receipts within selected month
             StreamBuilder<QuerySnapshot>(
-              
               stream: getExpensesStream(),
               builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) {
-
+                if (snapshot.connectionState == ConnectionState.waiting &&
+                    !snapshot.hasData) {
                   return const SizedBox(
                     height: 150,
                     child: Center(
-                      child: CircularProgressIndicator(
-                        color: Colors.indigo,
-                      ),
+                      child: CircularProgressIndicator(color: Colors.indigo),
                     ),
                   );
                 }
-
                 if (snapshot.hasError) {
                   return const SizedBox(
                     height: 150,
                     child: Center(
-                      child: Text(
-                        'Error loading data',
-                        style: TextStyle(fontSize: 14, color: Colors.red),
-                      ),
+                      child: Text('Error loading data',
+                          style: TextStyle(fontSize: 14, color: Colors.red)),
                     ),
                   );
                 }
 
-                // Calculate total & count for personal/filtered view
                 double totalSpending = 0.0;
                 int numberOfExpenses = 0;
 
-                if (snapshot.hasData && snapshot.data!.docs.isNotEmpty) {
-                  final docs = snapshot.data!.docs;
-                  numberOfExpenses = docs.length;
-                  for (var doc in docs) {
-                    final data = doc.data() as Map<String, dynamic>;
-                    totalSpending +=
-                        HomeScreenProvider.calculateReceiptTotal(data);
-                  }
+                final docs = snapshot.data?.docs ?? [];
+                numberOfExpenses = docs.length;
+                for (var doc in docs) {
+                  final data = doc.data() as Map<String, dynamic>;
+                  totalSpending += HomeScreenProvider.calculateReceiptTotal(data);
                 }
 
-                // Shared & no filter → override with full-doc totals
-                if (homeScreenProvider.showWalletReceipts &&
-                    transactionProvider.selectedUserFilter == null) {
-                  final docs = snapshot.data!.docs;
+                // Shared & no filter → break out you vs partner
+                if (homeProv.showWalletReceipts &&
+                    txnProv.selectedUserFilter == null) {
                   final totals = <String, double>{};
-
                   for (var doc in docs) {
                     final data = doc.data() as Map<String, dynamic>;
                     final uid = data['userId'] as String? ?? 'Unknown';
-                    final amt = HomeScreenProvider.calculateReceiptTotal(
-                      data,
-                    );
+                    final amt = HomeScreenProvider.calculateReceiptTotal(data);
                     totals[uid] = (totals[uid] ?? 0) + amt;
                   }
-
                   final youTotal = totals[currentUserId] ?? 0.0;
-                  final other = totals.entries.firstWhere(
+                  final otherEntry = totals.entries.firstWhere(
                     (e) => e.key != currentUserId,
                     orElse: () => const MapEntry('Unknown', 0.0),
                   );
-                  final partnerId = other.key;
-                  final partnerTotal = other.value;
+                  final partnerTotal = otherEntry.value;
 
-                  // Pie chart with custom colors
+                  // Pie chart view
                   if (_showPieChart) {
                     final hasAny = (youTotal + partnerTotal) > 0;
                     return SizedBox(
@@ -206,10 +215,9 @@ class _TotalSpendingCardState extends State<TotalSpendingCard> {
                                     title: 'You',
                                     radius: 60,
                                     titleStyle: GoogleFonts.inter(
-                                      fontSize: 12,
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.w600,
-                                    ),
+                                        fontSize: 12,
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.w600),
                                   ),
                                   if (partnerTotal > 0)
                                     PieChartSectionData(
@@ -218,10 +226,9 @@ class _TotalSpendingCardState extends State<TotalSpendingCard> {
                                       title: 'Partner',
                                       radius: 60,
                                       titleStyle: GoogleFonts.inter(
-                                        fontSize: 12,
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.w600,
-                                      ),
+                                          fontSize: 12,
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.w600),
                                     ),
                                 ],
                                 sectionsSpace: 2,
@@ -229,23 +236,17 @@ class _TotalSpendingCardState extends State<TotalSpendingCard> {
                               ),
                             )
                           : const Center(
-                              child: Text(
-                                'No spending data',
-                                style: TextStyle(
-                                  fontSize: 14,
-                                  color: Colors.grey,
-                                ),
-                              ),
+                              child: Text('No spending data',
+                                  style: TextStyle(
+                                      fontSize: 14, color: Colors.grey)),
                             ),
                     );
                   }
 
                   // Segmented view
                   return ConstrainedBox(
-                    constraints: const BoxConstraints(
-                      minHeight: 100,
-                      maxHeight: 150,
-                    ),
+                    constraints:
+                        const BoxConstraints(minHeight: 100, maxHeight: 150),
                     child: Row(
                       children: [
                         Expanded(
@@ -255,36 +256,30 @@ class _TotalSpendingCardState extends State<TotalSpendingCard> {
                             userId: currentUserId,
                             total: youTotal,
                             color: Colors.indigo.shade700,
-                            homeScreenProvider: homeScreenProvider,
-                            onTap: () => transactionProvider.setUserFilter( currentUserId, // or partnerId, or null to clear
-  context,
-  authProvider.user!.uid,
-  authProvider.walletId,
-  homeScreenProvider.showWalletReceipts,),
+                            onTap: () => txnProv.setUserFilter(
+                              currentUserId,
+                              context,
+                              authProv.user!.uid,
+                              authProv.walletId,
+                              homeProv.showWalletReceipts,
+                            ),
                           ),
                         ),
                         const SizedBox(width: 8),
                         Expanded(
-                          child: FutureBuilder<String>(
-                            future: homeScreenProvider.fetchUserDisplayName(
-                              partnerId,
+                          child: _buildUserSegment(
+                            context,
+                            label: 'Partner',
+                            userId: otherEntry.key,
+                            total: partnerTotal,
+                            color: Colors.teal.shade400,
+                            onTap: () => txnProv.setUserFilter(
+                              otherEntry.key,
+                              context,
+                              authProv.user!.uid,
+                              authProv.walletId,
+                              homeProv.showWalletReceipts,
                             ),
-                            builder: (ctx, nameSnap) {
-                              final label = nameSnap.data ?? 'Partner';
-                              return _buildUserSegment(
-                                context,
-                                label: label,
-                                userId: partnerId,
-                                total: partnerTotal,
-                                color: Colors.teal.shade400,
-                                homeScreenProvider: homeScreenProvider,
-                                onTap: () => transactionProvider.setUserFilter( partnerId, // or partnerId, or null to clear
-  context,
-  authProvider.user!.uid,
-  authProvider.walletId,
-  homeScreenProvider.showWalletReceipts,),
-                              );
-                            },
                           ),
                         ),
                       ],
@@ -312,28 +307,24 @@ class _TotalSpendingCardState extends State<TotalSpendingCard> {
                         color: Colors.grey.shade600,
                       ),
                     ),
-                    if (transactionProvider.selectedUserFilter != null)
+                    if (txnProv.selectedUserFilter != null)
                       Padding(
                         padding: const EdgeInsets.only(top: 12),
                         child: GestureDetector(
-                          onTap: () =>
-                              transactionProvider.setUserFilter(  null,
-  context,
-  authProvider.user!.uid,
-  authProvider.walletId,
-  homeScreenProvider.showWalletReceipts,),
+                          onTap: () => txnProv.setUserFilter(
+                            null,
+                            context,
+                            authProv.user!.uid,
+                            authProv.walletId,
+                            homeProv.showWalletReceipts,
+                          ),
                           child: Chip(
                             label: Text(
                               'Clear Filter',
-                              style: GoogleFonts.inter(
-                                fontSize: 12,
-                                color: Colors.white,
-                              ),
+                              style: GoogleFonts.inter(fontSize: 12, color: Colors.white),
                             ),
                             backgroundColor: Colors.indigo.shade700,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                            ),
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
                           ),
                         ),
                       ),
@@ -353,7 +344,6 @@ class _TotalSpendingCardState extends State<TotalSpendingCard> {
     required String userId,
     required double total,
     required Color color,
-    required HomeScreenProvider homeScreenProvider,
     required VoidCallback onTap,
   }) {
     return Hero(
@@ -369,23 +359,13 @@ class _TotalSpendingCardState extends State<TotalSpendingCard> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  label,
-                  style: GoogleFonts.inter(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: color,
-                  ),
-                ),
+                Text(label,
+                    style: GoogleFonts.inter(
+                        fontSize: 11, fontWeight: FontWeight.w600, color: color)),
                 const SizedBox(height: 4),
-                Text(
-                  _currencyFormatter.format(total),
-                  style: GoogleFonts.inter(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
-                    color: color,
-                  ),
-                ),
+                Text(_currencyFormatter.format(total),
+                    style: GoogleFonts.inter(
+                        fontSize: 14, fontWeight: FontWeight.w700, color: color)),
               ],
             ),
           ),

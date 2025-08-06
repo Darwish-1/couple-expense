@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:couple_expenses/providers/auth_provider.dart';
+import 'package:couple_expenses/providers/month_selection_provider.dart';
 import 'package:couple_expenses/providers/transaction_list_provider.dart';
 import 'package:couple_expenses/providers/wallet_provider.dart';
 import 'package:couple_expenses/services/gpt_parser.dart';
@@ -17,7 +18,26 @@ import 'package:record/record.dart';
 
 class HomeScreenProvider extends ChangeNotifier {
 
+int _monthFromString(String month) {
+  final m = int.tryParse(month);
+  if (m != null && m >= 1 && m <= 12) return m;
 
+  const names = {
+    'january': 1,
+    'february': 2,
+    'march': 3,
+    'april': 4,
+    'may': 5,
+    'june': 6,
+    'july': 7,
+    'august': 8,
+    'september': 9,
+    'october': 10,
+    'november': 11,
+    'december': 12,
+  };
+  return names[month.toLowerCase()] ?? DateTime.now().month;
+}
   AudioRecorder? _recorder;
   bool _isRecording = false;
   bool _isProcessing = false;
@@ -119,74 +139,92 @@ class HomeScreenProvider extends ChangeNotifier {
 
   
 
-  Future<void> saveMultipleToFirestore(List<Map<String, dynamic>> expenses, BuildContext context) async {
-    if (expenses.isEmpty) {
-      Provider.of<AuthProvider>(context, listen: false).showError(context);
-      return;
-    }
-
-    final authProvider = Provider.of<AuthProvider>(context, listen: false);
-    final userId = authProvider.user?.uid;
-    final walletId = authProvider.walletId;
-    final now = DateTime.now();
-
-    final Map<String, Map<String, dynamic>> groupedExpenses = {};
-
-    for (var expense in expenses) {
-      final parsedDate = GptParser.normalizeDate(expense['date_of_purchase']);
-      final category = expense['category'] ?? 'General';
-      final item_name = expense['item_name'];
-      final unit_price = (expense['unit_price'] as num?)?.toDouble();
-
-      if (item_name == null || unit_price == null) {
-        debugPrint('Skipping expense due to missing item_name or unit_price: $expense');
-        continue;
-      }
-
-      final String dateKey = parsedDate != null ? DateFormat('yyyy-MM-dd').format(parsedDate) : DateFormat('yyyy-MM-dd').format(now);
-      final String groupKey = '$category-$dateKey';
-
-      if (!groupedExpenses.containsKey(groupKey)) {
-        groupedExpenses[groupKey] = {
-          'item_name': [],
-          'unit_price': [],
-          'date_of_purchase': Timestamp.fromDate(parsedDate ?? now),
-          'category': category,
-          'userId': userId,
-          'walletId': walletId,
-          'created_at': Timestamp.fromDate(now),
-        };
-      }
-      (groupedExpenses[groupKey]!['item_name'] as List).add(item_name);
-      (groupedExpenses[groupKey]!['unit_price'] as List).add(unit_price);
-    }
-
-    final batch = FirebaseFirestore.instance.batch();
-    String? lastCreatedDocId; // Store this for animation
-
-    try {
-      for (var entry in groupedExpenses.values) {
-        final docRef = FirebaseFirestore.instance.collection('receipts').doc();
-        batch.set(docRef, entry);
-            lastCreatedDocId ??= docRef.id; // Set the first created doc's ID (could be changed to last if you prefer)
-
-      }
-      await batch.commit();
-
-
-  if (lastCreatedDocId != null) {
-    Provider.of<TransactionListProvider>(context, listen: false).setLastAddedId(lastCreatedDocId);
-    Future.delayed(const Duration(seconds: 1), () {
-      Provider.of<TransactionListProvider>(context, listen: false).setLastAddedId(null);
-    });
+  Future<void> saveMultipleToFirestore(
+    List<Map<String, dynamic>> expenses,
+    BuildContext context,
+  ) async {
+  if (expenses.isEmpty) {
+    Provider.of<AuthProvider>(context, listen: false).showError(context);
+    return;
   }
 
-      showSuccess(groupedExpenses.length);
-    } catch (e) {
-      Provider.of<AuthProvider>(context, listen: false).showError(context);
-      debugPrint('Save grouped expenses error: $e');
+  final authProvider = Provider.of<AuthProvider>(context, listen: false);
+  final userId       = authProvider.user?.uid;
+  final walletId     = authProvider.walletId;
+  final now          = DateTime.now();
+
+  // 1) get the selected month/year
+  final monthProv  = Provider.of<MonthSelectionProvider>(context, listen: false);
+  final monthNum   = _monthFromString(monthProv.selectedMonth);
+  final year       = monthProv.selectedYear;
+
+  final Map<String, Map<String, dynamic>> groupedExpenses = {};
+
+  for (var expense in expenses) {
+    final parsedDate = GptParser.normalizeDate(expense['date_of_purchase']);
+    final category   = expense['category'] ?? 'General';
+    final item_name  = expense['item_name'];
+    final unit_price = (expense['unit_price'] as num?)?.toDouble();
+
+    if (item_name == null || unit_price == null) {
+      debugPrint('Skipping expense due to missing item_name or unit_price: $expense');
+      continue;
     }
+
+    // 2) determine the day-of-month (parsedDate or today)
+    final baseDate = parsedDate ?? now;
+    final day      = baseDate.day;
+
+    // 3) force month/year to selected values
+    final purchaseDate = DateTime(year, monthNum, day);
+
+    // 4) groupKey uses this forced date
+    final dateKey  = DateFormat('yyyy-MM-dd').format(purchaseDate);
+    final groupKey = '$category-$dateKey';
+
+    if (!groupedExpenses.containsKey(groupKey)) {
+      groupedExpenses[groupKey] = {
+        'item_name': [],
+        'unit_price': [],
+        'date_of_purchase': Timestamp.fromDate(purchaseDate),
+        'category': category,
+        'userId': userId,
+        'walletId': walletId,
+        'created_at': Timestamp.fromDate(now),
+      };
+    }
+    (groupedExpenses[groupKey]!['item_name'] as List).add(item_name);
+    (groupedExpenses[groupKey]!['unit_price'] as List).add(unit_price);
   }
+
+  // batch‐write as before…
+  final batch = FirebaseFirestore.instance.batch();
+  String? lastCreatedDocId;
+
+  try {
+    for (var entry in groupedExpenses.values) {
+      final docRef = FirebaseFirestore.instance.collection('receipts').doc();
+      batch.set(docRef, entry);
+      lastCreatedDocId ??= docRef.id;
+    }
+    await batch.commit();
+
+    if (lastCreatedDocId != null) {
+      Provider.of<TransactionListProvider>(context, listen: false)
+          .setLastAddedId(lastCreatedDocId);
+      Future.delayed(const Duration(seconds: 1), () {
+        Provider.of<TransactionListProvider>(context, listen: false)
+            .setLastAddedId(null);
+      });
+    }
+
+    showSuccess(groupedExpenses.length);
+  } catch (e) {
+    Provider.of<AuthProvider>(context, listen: false).showError(context);
+    debugPrint('Save grouped expenses error: $e');
+  }
+}
+
 
   Future<String> _getTempFilePath() async {
     final dir = await getTemporaryDirectory();

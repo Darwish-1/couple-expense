@@ -4,7 +4,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 class TransactionListProvider extends ChangeNotifier {
-  // Transaction list fields
   Stream<QuerySnapshot>? _expensesStream;
   List<DocumentSnapshot> _allDocs = [];
   StreamSubscription<QuerySnapshot>? _streamSubscription;
@@ -18,34 +17,93 @@ class TransactionListProvider extends ChangeNotifier {
   String? _selectedUserFilter;
   Map<String, double> _totalByUser = {};
 
-  // Public getters
-  List<DocumentSnapshot> get allDocs => _allDocs;
+  int _monthFromString(String month) {
+    const months = {
+      'january': 1,
+      'february': 2,
+      'march': 3,
+      'april': 4,
+      'may': 5,
+      'june': 6,
+      'july': 7,
+      'august': 8,
+      'september': 9,
+      'october': 10,
+      'november': 11,
+      'december': 12,
+    };
+    return months[month.toLowerCase()] ?? DateTime.now().month;
+  }
   
+   Future<List<DocumentSnapshot>> getSharedExpensesForMonth(
+    String month,
+    int year,
+    String walletId,
+    String? filterUserId,
+) async {
+  final monthNumber = _monthFromString(month);
+  final startOfMonth = DateTime.utc(year, monthNumber, 1);
+  final endOfMonth = DateTime.utc(year, monthNumber + 1, 0)
+      .add(const Duration(hours: 23, minutes: 59, seconds: 59));
+
+  Query<Map<String, dynamic>> query = FirebaseFirestore.instance
+    .collection('receipts')
+    .where('date_of_purchase',
+        isGreaterThanOrEqualTo: Timestamp.fromDate(startOfMonth))
+    .where('date_of_purchase',
+        isLessThanOrEqualTo: Timestamp.fromDate(endOfMonth))
+    .where('walletId', isEqualTo: walletId);
+
+  if (filterUserId != null) {
+    query = query.where('userId', isEqualTo: filterUserId);
+  }
+
+  final snapshot = await query.get();
+  print(
+    '[DEBUG] Shared query returned ${snapshot.docs.length} docs '
+    'for wallet=$walletId, filter=$filterUserId'
+  );
+  return snapshot.docs;
+}
+
+  Future<List<DocumentSnapshot>> getExpensesForMonth(String month, int year, String userId) async {
+    int monthNumber = _monthFromString(month);
+
+    final startOfMonth = DateTime.utc(year, monthNumber, 1);
+    final endOfMonth = DateTime.utc(year, monthNumber + 1, 0).add(const Duration(hours: 23, minutes: 59, seconds: 59));
+
+    QuerySnapshot snapshot = await FirebaseFirestore.instance
+        .collection('receipts')
+        .where('date_of_purchase', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfMonth))
+        .where('date_of_purchase', isLessThanOrEqualTo: Timestamp.fromDate(endOfMonth))
+        .where('userId', isEqualTo: userId)
+        .get();
+
+    return snapshot.docs;
+  }
+
+  List<DocumentSnapshot> get allDocs => _allDocs;
   bool get hasMore => _hasMore;
   bool get isLoadingMore => _isLoadingMore;
   String? get selectedUserFilter => _selectedUserFilter;
   Map<String, double> get totalByUser => _totalByUser;
-String? lastAddedId;
+  String? lastAddedId;
 
-void setLastAddedId(String? id) {
-  lastAddedId = id;
-  notifyListeners();
-}
-  /// Initialize the transaction list stream
+  void setLastAddedId(String? id) {
+    lastAddedId = id;
+    notifyListeners();
+  }
+
   void initializeStream(BuildContext context, String userId, String? walletId, bool showWalletReceipts) {
-    print('initializeStream called!');
-
     _setupStream(context, userId, walletId, showWalletReceipts);
   }
 
-  /// Set filter for user
   void setUserFilter(String? userId, BuildContext context, String userUid, String? walletId, bool showWalletReceipts) {
     _selectedUserFilter = userId;
     _setupStream(context, userUid, walletId, showWalletReceipts);
     notifyListeners();
   }
 
-  /// Remove a document from the transaction list and update totals
   void removeDoc(String docId) {
     _allDocs.removeWhere((doc) => doc.id == docId);
     _queryCache.updateAll((key, value) => value..removeWhere((doc) => doc.id == docId));
@@ -53,7 +111,6 @@ void setLastAddedId(String? id) {
     notifyListeners();
   }
 
-  /// Setup stream for fetching transactions
   void _setupStream(BuildContext context, String userId, String? walletId, bool showWalletReceipts) {
     final newStreamKey = '${showWalletReceipts}_${walletId}_${_selectedUserFilter ?? "all"}';
     if (_currentStreamKey == newStreamKey && _streamSubscription != null) return;
@@ -104,18 +161,15 @@ void setLastAddedId(String? id) {
             notifyListeners();
           },
           onError: (e) {
-            // handle error (maybe call a callback or notify error state)
             notifyListeners();
           },
         );
       } catch (e) {
-        // handle error (maybe call a callback or notify error state)
         notifyListeners();
       }
     });
   }
 
-  /// Load more transactions for pagination
   Future<void> loadMoreExpenses(BuildContext context, String userId, String? walletId, bool showWalletReceipts) async {
     if (!_hasMore || _isLoadingMore) return;
 
@@ -162,7 +216,6 @@ void setLastAddedId(String? id) {
         }
         notifyListeners();
       } catch (e) {
-        // handle error
         notifyListeners();
       } finally {
         _isLoadingMore = false;
@@ -171,7 +224,6 @@ void setLastAddedId(String? id) {
     });
   }
 
-  /// Update user totals from the list of transactions (docs)
   void updateTotalByUserFromDocs(List<DocumentSnapshot> docs) {
     _totalByUser.clear();
     for (var doc in docs) {

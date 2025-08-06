@@ -1,4 +1,5 @@
 import 'package:couple_expenses/providers/home_screen_provider.dart';
+import 'package:couple_expenses/providers/month_selection_provider.dart';
 import 'package:couple_expenses/providers/transaction_list_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -50,7 +51,8 @@ class MyApp extends StatelessWidget {
            providers: [
     ChangeNotifierProvider(create: (_) => WalletProvider()),
     ChangeNotifierProvider(create: (_) => HomeScreenProvider()),
-    ChangeNotifierProvider(create: (_) => TransactionListProvider()), // <-- Add this line
+    ChangeNotifierProvider(create: (_) => TransactionListProvider()),
+     ChangeNotifierProvider(create: (_) => MonthSelectionProvider()),  // <-- Add this line
     ChangeNotifierProxyProvider<WalletProvider, AuthProvider>(
       create: (context) => AuthProvider(walletProvider: context.read<WalletProvider>()),
       update: (context, walletProvider, authProvider) => authProvider ?? AuthProvider(walletProvider: walletProvider),
