@@ -103,7 +103,9 @@ class _PermanentTransactionListState extends State<_PermanentTransactionList> {
   void initState() {
     super.initState();
     _currentCacheKey = _generateCacheKey();
-    _ensureTransactionsLoaded();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _ensureTransactionsLoaded();
+    });
   }
 
   @override
