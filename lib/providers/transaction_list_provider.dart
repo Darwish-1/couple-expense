@@ -4,10 +4,19 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 class TransactionListProvider extends ChangeNotifier {
+  // Permanent cache that holds all transactions by cache key
+  final Map<String, List<DocumentSnapshot>> _permanentCache = {};
+  
+  // Track loading states for each cache key
+  final Map<String, bool> _loadingStates = {};
+  
+  // Cache for monthly totals: {cacheKey: Map<String, double>}
+  final Map<String, Map<String, double>> _totalsByUserCache = {};
+  
+  // Stream management
   Stream<QuerySnapshot>? _expensesStream;
   List<DocumentSnapshot> _allDocs = [];
   StreamSubscription<QuerySnapshot>? _streamSubscription;
-  Map<String, List<DocumentSnapshot>> _queryCache = {};
   DocumentSnapshot? _lastDocument;
   bool _hasMore = true;
   bool _isLoadingMore = false;
@@ -16,6 +25,19 @@ class TransactionListProvider extends ChangeNotifier {
   String? _currentStreamKey;
   String? _selectedUserFilter;
   Map<String, double> _totalByUser = {};
+  String? lastAddedId;
+
+  // Getters
+  List<DocumentSnapshot> get allDocs => _allDocs;
+  bool get hasMore => _hasMore;
+  bool get isLoadingMore => _isLoadingMore;
+  String? get selectedUserFilter => _selectedUserFilter;
+  Map<String, double> get totalByUser => _totalByUser;
+
+  void setLastAddedId(String? id) {
+    lastAddedId = id;
+    notifyListeners();
+  }
 
   int _monthFromString(String month) {
     const months = {
@@ -34,84 +56,336 @@ class TransactionListProvider extends ChangeNotifier {
     };
     return months[month.toLowerCase()] ?? DateTime.now().month;
   }
-  
-   Future<List<DocumentSnapshot>> getSharedExpensesForMonth(
+
+  // Get transactions for a specific cache key (always returns a list, never null)
+  List<DocumentSnapshot> getTransactionsForCache(String cacheKey) {
+    return _permanentCache[cacheKey] ?? [];
+  }
+
+  // Check if a cache key is currently loading
+  bool isLoadingCache(String cacheKey) {
+    return _loadingStates[cacheKey] ?? false;
+  }
+
+  // Ensure transactions are loaded for a specific month/filter combination
+  Future<void> ensureMonthlyTransactionsLoaded({
+    required String cacheKey,
+    required String month,
+    required int year,
+    required String userId,
+    required bool showShared,
+    String? walletId,
+    String? filterUserId,
+  }) async {
+    // If we already have data for this cache key, don't reload
+    if (_permanentCache.containsKey(cacheKey) && _permanentCache[cacheKey]!.isNotEmpty) {
+      return;
+    }
+
+    // If we're already loading this cache, don't start another load
+    if (_loadingStates[cacheKey] == true) {
+      return;
+    }
+
+    _loadingStates[cacheKey] = true;
+    notifyListeners();
+
+    try {
+      List<DocumentSnapshot> docs;
+      
+      if (showShared && walletId != null) {
+        docs = await _fetchSharedExpensesForMonth(month, year, walletId, filterUserId);
+      } else {
+        docs = await _fetchExpensesForMonth(month, year, userId);
+      }
+
+      _permanentCache[cacheKey] = docs;
+      _calculateAndCacheTotals(cacheKey, docs);
+      
+      print('[CACHE] Loaded ${docs.length} transactions for cache key: $cacheKey');
+    } catch (e) {
+      print('[CACHE] Error loading transactions for $cacheKey: $e');
+      _permanentCache[cacheKey] = [];
+    }
+
+    _loadingStates[cacheKey] = false;
+    notifyListeners();
+  }
+
+  // Force refresh a specific cache (used after edits)
+  Future<void> refreshCache(String cacheKey) async {
+    // Parse cache key to get the parameters
+    final parts = cacheKey.split('-');
+    if (parts.length != 6) return;
+
+    final userId = parts[0];
+    final type = parts[1]; // 'shared' or 'personal'
+    final walletId = parts[2] != 'nowallet' ? parts[2] : null;
+    final filterUserId = parts[3] != 'nofilter' ? parts[3] : null;
+    final month = parts[4];
+    final year = int.tryParse(parts[5]);
+
+    if (year == null) return;
+
+    _loadingStates[cacheKey] = true;
+    
+    try {
+      List<DocumentSnapshot> docs;
+      
+      if (type == 'shared' && walletId != null) {
+        docs = await _fetchSharedExpensesForMonth(month, year, walletId, filterUserId);
+      } else {
+        docs = await _fetchExpensesForMonth(month, year, userId);
+      }
+
+      _permanentCache[cacheKey] = docs;
+      _calculateAndCacheTotals(cacheKey, docs);
+      
+      print('[CACHE] Refreshed ${docs.length} transactions for cache key: $cacheKey');
+    } catch (e) {
+      print('[CACHE] Error refreshing cache $cacheKey: $e');
+    }
+
+    _loadingStates[cacheKey] = false;
+    notifyListeners();
+  }
+
+  Future<List<DocumentSnapshot>> _fetchSharedExpensesForMonth(
     String month,
     int year,
     String walletId,
     String? filterUserId,
-) async {
-  final monthNumber = _monthFromString(month);
-  final startOfMonth = DateTime.utc(year, monthNumber, 1);
-  final endOfMonth = DateTime.utc(year, monthNumber + 1, 0)
-      .add(const Duration(hours: 23, minutes: 59, seconds: 59));
+  ) async {
+    final monthNumber = _monthFromString(month);
+    final startOfMonth = DateTime.utc(year, monthNumber, 1);
+    final endOfMonth = DateTime.utc(year, monthNumber + 1, 0)
+        .add(const Duration(hours: 23, minutes: 59, seconds: 59));
 
-  Query<Map<String, dynamic>> query = FirebaseFirestore.instance
-    .collection('receipts')
-    .where('date_of_purchase',
-        isGreaterThanOrEqualTo: Timestamp.fromDate(startOfMonth))
-    .where('date_of_purchase',
-        isLessThanOrEqualTo: Timestamp.fromDate(endOfMonth))
-    .where('walletId', isEqualTo: walletId);
+    Query<Map<String, dynamic>> query = FirebaseFirestore.instance
+      .collection('receipts')
+      .where('date_of_purchase',
+          isGreaterThanOrEqualTo: Timestamp.fromDate(startOfMonth))
+      .where('date_of_purchase',
+          isLessThanOrEqualTo: Timestamp.fromDate(endOfMonth))
+      .where('walletId', isEqualTo: walletId)
+      .orderBy('date_of_purchase', descending: true)
+      .orderBy('created_at', descending: true);
 
-  if (filterUserId != null) {
-    query = query.where('userId', isEqualTo: filterUserId);
+    if (filterUserId != null) {
+      query = query.where('userId', isEqualTo: filterUserId);
+    }
+
+    final snapshot = await query.get();
+    return snapshot.docs;
   }
 
-  final snapshot = await query.get();
-  print(
-    '[DEBUG] Shared query returned ${snapshot.docs.length} docs '
-    'for wallet=$walletId, filter=$filterUserId'
-  );
-  return snapshot.docs;
-}
-
-  Future<List<DocumentSnapshot>> getExpensesForMonth(String month, int year, String userId) async {
-    int monthNumber = _monthFromString(month);
-
+  Future<List<DocumentSnapshot>> _fetchExpensesForMonth(
+    String month,
+    int year,
+    String userId,
+  ) async {
+    final monthNumber = _monthFromString(month);
     final startOfMonth = DateTime.utc(year, monthNumber, 1);
-    final endOfMonth = DateTime.utc(year, monthNumber + 1, 0).add(const Duration(hours: 23, minutes: 59, seconds: 59));
+    final endOfMonth = DateTime.utc(year, monthNumber + 1, 0)
+        .add(const Duration(hours: 23, minutes: 59, seconds: 59));
 
     QuerySnapshot snapshot = await FirebaseFirestore.instance
-        .collection('receipts')
-        .where('date_of_purchase', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfMonth))
-        .where('date_of_purchase', isLessThanOrEqualTo: Timestamp.fromDate(endOfMonth))
-        .where('userId', isEqualTo: userId)
-        .get();
+      .collection('receipts')
+      .where('date_of_purchase',
+          isGreaterThanOrEqualTo: Timestamp.fromDate(startOfMonth))
+      .where('date_of_purchase',
+          isLessThanOrEqualTo: Timestamp.fromDate(endOfMonth))
+      .where('userId', isEqualTo: userId)
+      .orderBy('date_of_purchase', descending: true)
+      .orderBy('created_at', descending: true)
+      .get();
 
     return snapshot.docs;
   }
 
-  List<DocumentSnapshot> get allDocs => _allDocs;
-  bool get hasMore => _hasMore;
-  bool get isLoadingMore => _isLoadingMore;
-  String? get selectedUserFilter => _selectedUserFilter;
-  Map<String, double> get totalByUser => _totalByUser;
-  String? lastAddedId;
+  void _calculateAndCacheTotals(String cacheKey, List<DocumentSnapshot> docs) {
+    final totals = <String, double>{};
+    for (var doc in docs) {
+      final data = doc.data() as Map<String, dynamic>;
+      final userId = data['userId'] as String?;
+      if (userId != null) {
+        final prices = data['unit_price'];
+        double amount = 0.0;
+        
+        if (prices is List) {
+          amount = prices.fold(0.0, (sum, price) => 
+            sum + (price is num ? price.toDouble() : 0.0));
+        } else if (prices is num) {
+          amount = prices.toDouble();
+        } else if (data.containsKey('amount') && data['amount'] is num) {
+          amount = (data['amount'] as num).toDouble();
+        }
+        
+        totals[userId] = (totals[userId] ?? 0) + amount;
+      }
+    }
+    _totalsByUserCache[cacheKey] = totals;
+  }
 
-  void setLastAddedId(String? id) {
-    lastAddedId = id;
+  Map<String, double> getCachedTotals(String cacheKey) {
+    return _totalsByUserCache[cacheKey] ?? {};
+  }
+
+  // Add a new document to the appropriate caches
+  void addDocToCache(DocumentSnapshot doc, String month, int year) {
+    final data = doc.data() as Map<String, dynamic>;
+    final docUserId = data['userId'] as String?;
+    final docWalletId = data['walletId'] as String?;
+    
+    if (docUserId == null) return;
+
+    // Find all cache keys that should include this document
+    final keysToUpdate = <String>[];
+    
+    for (final cacheKey in _permanentCache.keys) {
+      if (_shouldDocumentBeInCache(doc, cacheKey, month, year)) {
+        keysToUpdate.add(cacheKey);
+      }
+    }
+    
+    // Add document to all relevant caches
+    for (final key in keysToUpdate) {
+      _permanentCache[key]!.insert(0, doc); // Add at beginning (most recent first)
+      _calculateAndCacheTotals(key, _permanentCache[key]!);
+    }
+    
+    if (keysToUpdate.isNotEmpty) {
+      print('[CACHE] Added new document to ${keysToUpdate.length} cache(s)');
+      notifyListeners();
+    }
+  }
+
+  // Remove a document from all caches
+  void removeDocFromCache(String docId, String cacheKey) {
+    // Remove from specific cache
+    if (_permanentCache.containsKey(cacheKey)) {
+      final originalLength = _permanentCache[cacheKey]!.length;
+      _permanentCache[cacheKey]!.removeWhere((doc) => doc.id == docId);
+      
+      if (_permanentCache[cacheKey]!.length < originalLength) {
+        _calculateAndCacheTotals(cacheKey, _permanentCache[cacheKey]!);
+        print('[CACHE] Removed doc $docId from cache $cacheKey');
+      }
+    }
+    
+    // Also remove from all other caches that might contain this document
+    for (final key in _permanentCache.keys) {
+      if (key != cacheKey) {
+        final originalLength = _permanentCache[key]!.length;
+        _permanentCache[key]!.removeWhere((doc) => doc.id == docId);
+        
+        if (_permanentCache[key]!.length < originalLength) {
+          _calculateAndCacheTotals(key, _permanentCache[key]!);
+        }
+      }
+    }
+    
+    // Remove from stream docs too
+    _allDocs.removeWhere((doc) => doc.id == docId);
+    updateTotalByUserFromDocs(_allDocs);
+    
     notifyListeners();
   }
 
-  void initializeStream(BuildContext context, String userId, String? walletId, bool showWalletReceipts) {
-    _setupStream(context, userId, walletId, showWalletReceipts);
+  bool _shouldDocumentBeInCache(DocumentSnapshot doc, String cacheKey, String month, int year) {
+    final data = doc.data() as Map<String, dynamic>;
+    final parts = cacheKey.split('-');
+    
+    if (parts.length != 6) return false;
+    
+    final cacheUserId = parts[0];
+    final cacheType = parts[1]; // 'shared' or 'personal'
+    final cacheWalletId = parts[2];
+    final cacheFilterUserId = parts[3];
+    final cacheMonth = parts[4];
+    final cacheYear = int.tryParse(parts[5]);
+    
+    // Check month and year match
+    if (cacheMonth != month || cacheYear != year) return false;
+    
+    // Check document matches cache criteria
+    if (cacheType == 'shared') {
+      if (cacheWalletId != 'nowallet' && data['walletId'] != cacheWalletId) return false;
+      if (cacheFilterUserId != 'nofilter' && data['userId'] != cacheFilterUserId) return false;
+    } else {
+      if (data['userId'] != cacheUserId) return false;
+    }
+    
+    return true;
   }
 
-  void setUserFilter(String? userId, BuildContext context, String userUid, String? walletId, bool showWalletReceipts) {
+  void setUserFilter(String? userId, BuildContext context, String userUid, 
+      String? walletId, bool showWalletReceipts) {
     _selectedUserFilter = userId;
     _setupStream(context, userUid, walletId, showWalletReceipts);
     notifyListeners();
   }
 
   void removeDoc(String docId) {
+    // Remove from current stream docs
     _allDocs.removeWhere((doc) => doc.id == docId);
-    _queryCache.updateAll((key, value) => value..removeWhere((doc) => doc.id == docId));
+    
+    // Remove from all permanent caches
+    for (final key in _permanentCache.keys) {
+      final originalLength = _permanentCache[key]!.length;
+      _permanentCache[key]!.removeWhere((doc) => doc.id == docId);
+      if (_permanentCache[key]!.length < originalLength) {
+        _calculateAndCacheTotals(key, _permanentCache[key]!);
+      }
+    }
+    
     updateTotalByUserFromDocs(_allDocs);
+    notifyListeners();
+    print('[CACHE] Removed doc $docId from all caches');
+  }
+
+  void invalidateCache({String? specificKey}) {
+    if (specificKey != null) {
+      _permanentCache.remove(specificKey);
+      _totalsByUserCache.remove(specificKey);
+      _loadingStates.remove(specificKey);
+      print('[CACHE] Invalidated specific cache: $specificKey');
+    } else {
+      _permanentCache.clear();
+      _totalsByUserCache.clear();
+      _loadingStates.clear();
+      print('[CACHE] Invalidated all cache');
+    }
+    
     notifyListeners();
   }
 
-  void _setupStream(BuildContext context, String userId, String? walletId, bool showWalletReceipts) {
+  void invalidateCacheForMonth(String month, int year) {
+    final keysToRemove = _permanentCache.keys.where((key) {
+      final parts = key.split('-');
+      final cacheMonth = parts[4];
+      final cacheYear = int.tryParse(parts[5]);
+      return cacheMonth == month && cacheYear == year;
+    }).toList();
+    
+    for (final key in keysToRemove) {
+      _permanentCache.remove(key);
+      _totalsByUserCache.remove(key);
+      _loadingStates.remove(key);
+    }
+    
+    print('[CACHE] Invalidated cache for $month $year');
+    notifyListeners();
+  }
+
+  // Compatibility methods for existing stream functionality
+  void initializeStream(BuildContext context, String userId, String? walletId, 
+      bool showWalletReceipts) {
+    _setupStream(context, userId, walletId, showWalletReceipts);
+  }
+
+  void _setupStream(BuildContext context, String userId, String? walletId, 
+      bool showWalletReceipts) {
     final newStreamKey = '${showWalletReceipts}_${walletId}_${_selectedUserFilter ?? "all"}';
     if (_currentStreamKey == newStreamKey && _streamSubscription != null) return;
 
@@ -124,16 +398,6 @@ class TransactionListProvider extends ChangeNotifier {
       _isLoadingMore = false;
       _currentStreamKey = newStreamKey;
       notifyListeners();
-
-      final cacheKey = newStreamKey;
-      if (_queryCache.containsKey(cacheKey) && _queryCache[cacheKey]!.isNotEmpty) {
-        _allDocs = List.from(_queryCache[cacheKey]!);
-        _lastDocument = _allDocs.isNotEmpty ? _allDocs.last : null;
-        _hasMore = _allDocs.length == _documentsPerPage;
-        updateTotalByUserFromDocs(_allDocs);
-        notifyListeners();
-        return;
-      }
 
       Query<Map<String, dynamic>> baseQuery = FirebaseFirestore.instance
           .collection('receipts')
@@ -156,21 +420,23 @@ class TransactionListProvider extends ChangeNotifier {
             _allDocs = snapshot.docs;
             _lastDocument = snapshot.docs.isNotEmpty ? snapshot.docs.last : null;
             _hasMore = snapshot.docs.length == _documentsPerPage;
-            _queryCache[cacheKey] = List.from(_allDocs);
             updateTotalByUserFromDocs(_allDocs);
             notifyListeners();
           },
           onError: (e) {
+            print('[CACHE] Stream error: $e');
             notifyListeners();
           },
         );
       } catch (e) {
+        print('[CACHE] Setup stream error: $e');
         notifyListeners();
       }
     });
   }
 
-  Future<void> loadMoreExpenses(BuildContext context, String userId, String? walletId, bool showWalletReceipts) async {
+  Future<void> loadMoreExpenses(BuildContext context, String userId, 
+      String? walletId, bool showWalletReceipts) async {
     if (!_hasMore || _isLoadingMore) return;
 
     _debounceTimer?.cancel();
@@ -216,6 +482,7 @@ class TransactionListProvider extends ChangeNotifier {
         }
         notifyListeners();
       } catch (e) {
+        print('[CACHE] Load more error: $e');
         notifyListeners();
       } finally {
         _isLoadingMore = false;
@@ -229,7 +496,19 @@ class TransactionListProvider extends ChangeNotifier {
     for (var doc in docs) {
       final data = doc.data() as Map<String, dynamic>;
       final userId = data['userId'];
-      final amount = (data['amount'] ?? 0).toDouble();
+      
+      final prices = data['unit_price'];
+      double amount = 0.0;
+      
+      if (prices is List) {
+        amount = prices.fold(0.0, (sum, price) => 
+          sum + (price is num ? price.toDouble() : 0.0));
+      } else if (prices is num) {
+        amount = prices.toDouble();
+      } else if (data.containsKey('amount') && data['amount'] is num) {
+        amount = (data['amount'] as num).toDouble();
+      }
+      
       if (userId != null) {
         _totalByUser[userId] = (_totalByUser[userId] ?? 0) + amount;
       }
@@ -243,4 +522,6 @@ class TransactionListProvider extends ChangeNotifier {
     _streamSubscription?.cancel();
     super.dispose();
   }
+
+  
 }

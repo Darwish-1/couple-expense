@@ -1,4 +1,3 @@
-
 import 'dart:async';
 import 'dart:io';
 
@@ -38,6 +37,7 @@ int _monthFromString(String month) {
   };
   return names[month.toLowerCase()] ?? DateTime.now().month;
 }
+
   AudioRecorder? _recorder;
   bool _isRecording = false;
   bool _isProcessing = false;
@@ -50,10 +50,8 @@ int _monthFromString(String month) {
   final TextEditingController _walletIdController = TextEditingController();
   Map<String, String> _userNameCache = {};
 
-
-
+  // Getters
   bool get isRecording => _isRecording;
-
   bool get isProcessing => _isProcessing;
   bool get isLoadingStream => _isLoadingStream;
   bool get showSuccessPopup => _showSuccessPopup;
@@ -62,10 +60,6 @@ int _monthFromString(String month) {
   String get searchQuery => _searchQuery;
   bool get showWalletReceipts => _showWalletReceipts;
   TextEditingController get walletIdController => _walletIdController;
-
-
-
- 
 
   void setIsProcessing(bool value) {
     _isProcessing = value;
@@ -88,7 +82,6 @@ int _monthFromString(String month) {
       notifyListeners();
     }
   }
-
 
   Future<String> fetchUserDisplayName(String userId) async {
     if (_userNameCache.containsKey(userId)) {
@@ -130,101 +123,141 @@ int _monthFromString(String month) {
     }
   }
 
- 
-
-
   void updateTotalByUser(Map<String, double> newTotals) {
     notifyListeners();
   }
-
-  
 
   Future<void> saveMultipleToFirestore(
     List<Map<String, dynamic>> expenses,
     BuildContext context,
   ) async {
-  if (expenses.isEmpty) {
-    Provider.of<AuthProvider>(context, listen: false).showError(context);
-    return;
+    if (expenses.isEmpty) {
+      Provider.of<AuthProvider>(context, listen: false).showError(context);
+      return;
+    }
+
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    final txnProvider = Provider.of<TransactionListProvider>(context, listen: false);
+    final userId = authProvider.user?.uid;
+    final walletId = authProvider.walletId;
+    final now = DateTime.now();
+
+    // Get the selected month/year
+    final monthProv = Provider.of<MonthSelectionProvider>(context, listen: false);
+    final monthNum = _monthFromString(monthProv.selectedMonth);
+    final year = monthProv.selectedYear;
+
+    final Map<String, Map<String, dynamic>> groupedExpenses = {};
+
+    for (var expense in expenses) {
+      final parsedDate = GptParser.normalizeDate(expense['date_of_purchase']);
+      final category = expense['category'] ?? 'General';
+      final item_name = expense['item_name'];
+      final unit_price = (expense['unit_price'] as num?)?.toDouble();
+
+      if (item_name == null || unit_price == null) {
+        debugPrint('Skipping expense due to missing item_name or unit_price: $expense');
+        continue;
+      }
+
+      // Determine the day-of-month (parsedDate or today)
+      final baseDate = parsedDate ?? now;
+      final day = baseDate.day;
+
+      // Force month/year to selected values
+      final purchaseDate = DateTime(year, monthNum, day);
+
+      // GroupKey uses this forced date
+      final dateKey = DateFormat('yyyy-MM-dd').format(purchaseDate);
+      final groupKey = '$category-$dateKey';
+
+      if (!groupedExpenses.containsKey(groupKey)) {
+        groupedExpenses[groupKey] = {
+          'item_name': [],
+          'unit_price': [],
+          'date_of_purchase': Timestamp.fromDate(purchaseDate),
+          'category': category,
+          'userId': userId,
+          'walletId': walletId,
+          'created_at': Timestamp.fromDate(now),
+        };
+      }
+      (groupedExpenses[groupKey]!['item_name'] as List).add(item_name);
+      (groupedExpenses[groupKey]!['unit_price'] as List).add(unit_price);
+    }
+
+    // Batch write
+    final batch = FirebaseFirestore.instance.batch();
+    String? lastCreatedDocId;
+    final List<DocumentSnapshot> newDocs = [];
+
+    try {
+      for (var entry in groupedExpenses.values) {
+        final docRef = FirebaseFirestore.instance.collection('receipts').doc();
+        batch.set(docRef, entry);
+        lastCreatedDocId ??= docRef.id;
+        
+        // Create mock DocumentSnapshot for immediate cache update
+        // Note: This is a simplified approach - in production you might want to 
+        // wait for the batch commit and then create proper DocumentSnapshots
+      }
+      
+      await batch.commit();
+
+      // After successful commit, add to cache immediately
+      if (lastCreatedDocId != null) {
+        txnProvider.setLastAddedId(lastCreatedDocId);
+        
+        // Add new documents to appropriate caches
+        // We'll invalidate and let the UI reload instead for simplicity
+        final monthName = _getMonthName(monthNum);
+        txnProvider.invalidateCacheForMonth(monthName, year);
+        
+        Future.delayed(const Duration(seconds: 1), () {
+          txnProvider.setLastAddedId(null);
+        });
+      }
+
+      showSuccess(groupedExpenses.length);
+      
+      print('[CACHE] Successfully added ${groupedExpenses.length} expenses');
+      
+    } catch (e) {
+      Provider.of<AuthProvider>(context, listen: false).showError(context);
+      debugPrint('Save grouped expenses error: $e');
+    }
   }
 
-  final authProvider = Provider.of<AuthProvider>(context, listen: false);
-  final userId       = authProvider.user?.uid;
-  final walletId     = authProvider.walletId;
-  final now          = DateTime.now();
-
-  // 1) get the selected month/year
-  final monthProv  = Provider.of<MonthSelectionProvider>(context, listen: false);
-  final monthNum   = _monthFromString(monthProv.selectedMonth);
-  final year       = monthProv.selectedYear;
-
-  final Map<String, Map<String, dynamic>> groupedExpenses = {};
-
-  for (var expense in expenses) {
-    final parsedDate = GptParser.normalizeDate(expense['date_of_purchase']);
-    final category   = expense['category'] ?? 'General';
-    final item_name  = expense['item_name'];
-    final unit_price = (expense['unit_price'] as num?)?.toDouble();
-
-    if (item_name == null || unit_price == null) {
-      debugPrint('Skipping expense due to missing item_name or unit_price: $expense');
-      continue;
-    }
-
-    // 2) determine the day-of-month (parsedDate or today)
-    final baseDate = parsedDate ?? now;
-    final day      = baseDate.day;
-
-    // 3) force month/year to selected values
-    final purchaseDate = DateTime(year, monthNum, day);
-
-    // 4) groupKey uses this forced date
-    final dateKey  = DateFormat('yyyy-MM-dd').format(purchaseDate);
-    final groupKey = '$category-$dateKey';
-
-    if (!groupedExpenses.containsKey(groupKey)) {
-      groupedExpenses[groupKey] = {
-        'item_name': [],
-        'unit_price': [],
-        'date_of_purchase': Timestamp.fromDate(purchaseDate),
-        'category': category,
-        'userId': userId,
-        'walletId': walletId,
-        'created_at': Timestamp.fromDate(now),
-      };
-    }
-    (groupedExpenses[groupKey]!['item_name'] as List).add(item_name);
-    (groupedExpenses[groupKey]!['unit_price'] as List).add(unit_price);
+  String _getMonthName(int monthNumber) {
+    const monthNames = [
+      '', 'january', 'february', 'march', 'april', 'may', 'june',
+      'july', 'august', 'september', 'october', 'november', 'december'
+    ];
+    return monthNames[monthNumber];
   }
 
-  // batch‐write as before…
-  final batch = FirebaseFirestore.instance.batch();
-  String? lastCreatedDocId;
-
-  try {
-    for (var entry in groupedExpenses.values) {
-      final docRef = FirebaseFirestore.instance.collection('receipts').doc();
-      batch.set(docRef, entry);
-      lastCreatedDocId ??= docRef.id;
+  // Method to handle expense deletion with cache update
+  Future<void> deleteExpense(String docId, BuildContext context) async {
+    try {
+      await FirebaseFirestore.instance
+          .collection('receipts')
+          .doc(docId)
+          .delete();
+      
+      // Update cache by removing the doc
+      final txnProvider = Provider.of<TransactionListProvider>(context, listen: false);
+      txnProvider.removeDoc(docId);
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Expense deleted')),
+      );
+      
+      print('[CACHE] Expense deleted and removed from cache');
+    } catch (e) {
+      debugPrint('Delete expense error: $e');
+      Provider.of<AuthProvider>(context, listen: false).showError(context);
     }
-    await batch.commit();
-
-    if (lastCreatedDocId != null) {
-      Provider.of<TransactionListProvider>(context, listen: false)
-          .setLastAddedId(lastCreatedDocId);
-      Future.delayed(const Duration(seconds: 1), () {
-        Provider.of<TransactionListProvider>(context, listen: false)
-            .setLastAddedId(null);
-      });
-    }
-
-    showSuccess(groupedExpenses.length);
-  } catch (e) {
-    Provider.of<AuthProvider>(context, listen: false).showError(context);
-    debugPrint('Save grouped expenses error: $e');
   }
-}
-
 
   Future<String> _getTempFilePath() async {
     final dir = await getTemporaryDirectory();
@@ -256,74 +289,73 @@ int _monthFromString(String month) {
     }
   }
 
-Future<void> stopRecordingAndProcess(BuildContext context) async {
-  try {
-    if (!_isRecording || _recorder == null) return;
+  Future<void> stopRecordingAndProcess(BuildContext context) async {
+    try {
+      if (!_isRecording || _recorder == null) return;
 
-    // 1️⃣ Stop & clean up the recorder
-    _isRecording = false;
-    _isProcessing = true;
-    notifyListeners();
-
-    final path = await _recorder!.stop();
-    await _recorder!.dispose();
-    _recorder = null;
-
-    if (path != null && File(path).existsSync()) {
-      final file = File(path);
-
-      // 🚦 Start timing
-      final sw = Stopwatch()..start();
-
-      // 2️⃣ Transcription
-      final transcript = await GptParser.transcribeAudio(file);
-      print('⏱ Transcribe took ${sw.elapsedMilliseconds}ms');
-
-      // Show interim transcript
-      _transcription = transcript ?? '';
+      // Stop & clean up the recorder
+      _isRecording = false;
+      _isProcessing = true;
       notifyListeners();
 
-      // Reset stopwatch for parsing
-      sw
-        ..reset()
-        ..start();
+      final path = await _recorder!.stop();
+      await _recorder!.dispose();
+      _recorder = null;
 
-      if (transcript != null && transcript.isNotEmpty) {
-        // 3️⃣ Parsing
-        final expenses = await GptParser.extractStructuredData(transcript);
-        print('⏱ Parse took ${sw.elapsedMilliseconds}ms');
+      if (path != null && File(path).existsSync()) {
+        final file = File(path);
 
-        // Reset for Firestore write
+        // Start timing
+        final sw = Stopwatch()..start();
+
+        // Transcription
+        final transcript = await GptParser.transcribeAudio(file);
+        print('⏱ Transcribe took ${sw.elapsedMilliseconds}ms');
+
+        // Show interim transcript
+        _transcription = transcript ?? '';
+        notifyListeners();
+
+        // Reset stopwatch for parsing
         sw
           ..reset()
           ..start();
 
-        // 4️⃣ Firestore write
-         saveMultipleToFirestore(expenses!, context);
-        print('⏱ Firestore write took ${sw.elapsedMilliseconds}ms');
+        if (transcript != null && transcript.isNotEmpty) {
+          // Parsing
+          final expenses = await GptParser.extractStructuredData(transcript);
+          print('⏱ Parse took ${sw.elapsedMilliseconds}ms');
 
-        // Stop timing
-        sw.stop();
+          // Reset for Firestore write
+          sw
+            ..reset()
+            ..start();
+
+          // Firestore write
+          await saveMultipleToFirestore(expenses!, context);
+          print('⏱ Firestore write took ${sw.elapsedMilliseconds}ms');
+
+          // Stop timing
+          sw.stop();
+        } else {
+          Provider.of<AuthProvider>(context, listen: false).showError(context);
+        }
+
+        // Delete temp file
+        await file.delete();
       } else {
         Provider.of<AuthProvider>(context, listen: false).showError(context);
       }
-
-      // Delete temp file
-      await file.delete();
-    } else {
+    } catch (e) {
       Provider.of<AuthProvider>(context, listen: false).showError(context);
+      debugPrint('Stop recording error: $e');
+    } finally {
+      _isProcessing = false;
+      _recorder?.dispose();
+      _recorder = null;
+      notifyListeners();
     }
-  } catch (e) {
-    Provider.of<AuthProvider>(context, listen: false).showError(context);
-    debugPrint('Stop recording error: $e');
-  } finally {
-    _isProcessing = false;
-    _recorder?.dispose();
-    _recorder = null;
-    notifyListeners();
   }
-}
-
 
   Future<void> _parseAndAddExpense(String transcription, BuildContext context) async {
     try {
@@ -340,12 +372,22 @@ Future<void> stopRecordingAndProcess(BuildContext context) async {
     notifyListeners();
   }
 
-  void toggleWalletReceipts(BuildContext context) {
-    _showWalletReceipts = !_showWalletReceipts;
-    _searchQuery = '';
-    final authProvider = Provider.of<AuthProvider>(context, listen: false);
-    notifyListeners();
-  }
+void toggleWalletReceipts(BuildContext context) {
+  // flip the flag
+  _showWalletReceipts = !_showWalletReceipts;
+
+  // clear any search query
+  _searchQuery = '';
+
+  // Mark all caches for refresh instead of clearing them
+  final txnProvider = Provider.of<TransactionListProvider>(context, listen: false);
+  txnProvider.invalidateCache();
+
+  // now update any listeners (UI will rebuild and re‐load)
+  notifyListeners();
+
+  print('[CACHE] Toggled wallet receipts, cache marked for refresh');
+}
 
   Future<void> joinWallet(WalletProvider walletProvider, BuildContext context) async {
     try {
@@ -370,8 +412,15 @@ Future<void> stopRecordingAndProcess(BuildContext context) async {
 
       if (success) {
         _walletIdController.clear();
+        
+        // Clear cache when joining a new wallet
+        final txnProvider = Provider.of<TransactionListProvider>(context, listen: false);
+        txnProvider.invalidateCache();
+        
         final authProvider = Provider.of<AuthProvider>(context, listen: false);
         notifyListeners();
+        
+        print('[CACHE] Joined new wallet, cache cleared');
       }
     } catch (e) {
       Provider.of<AuthProvider>(context, listen: false).showError(context);
@@ -392,24 +441,29 @@ Future<void> stopRecordingAndProcess(BuildContext context) async {
     return category.contains(query) || date.contains(query);
   }
 
-static double calculateReceiptTotal(Map<String, dynamic> data) {
-  final prices = data['unit_price'];
-  if (prices is List) {
-    return prices.fold(0.0, (sum, price) => sum + (price is num ? price.toDouble() : 0.0));
-  } else if (prices is num) {
-    return prices.toDouble();
-  } else if (data.containsKey('amount') && data['amount'] is num) {
-    return (data['amount'] as num).toDouble();
+  static double calculateReceiptTotal(Map<String, dynamic> data) {
+    final prices = data['unit_price'];
+    if (prices is List) {
+      return prices.fold(0.0, (sum, price) => sum + (price is num ? price.toDouble() : 0.0));
+    } else if (prices is num) {
+      return prices.toDouble();
+    } else if (data.containsKey('amount') && data['amount'] is num) {
+      return (data['amount'] as num).toDouble();
+    }
+    return 0.0;
   }
-  return 0.0;
-}
+
   String? getCachedUserDisplayName(String userId) =>
       _userNameCache[userId];
-
       
-void clearCaches() {
-  _userNameCache.clear();
-}
+  void clearCaches() {
+    _userNameCache.clear();
+    
+    // Also clear transaction cache when user logs out or similar
+    // Note: You'll need to pass context or get the provider differently in a real scenario
+    // This is just to show the integration
+  }
+
   @override
   void dispose() {
     _recorder?.dispose();
