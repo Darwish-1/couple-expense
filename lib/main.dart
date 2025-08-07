@@ -1,12 +1,15 @@
-import 'package:couple_expenses/providers/home_screen_provider.dart';
-import 'package:couple_expenses/providers/month_selection_provider.dart';
-import 'package:couple_expenses/providers/transaction_list_provider.dart';
+// lib/main.dart
+
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
-import 'providers/auth_provider.dart';
+
 import 'providers/wallet_provider.dart';
+import 'providers/home_screen_provider.dart';
+import 'providers/transaction_list_provider.dart';
+import 'providers/month_selection_provider.dart';
+import 'providers/auth_provider.dart';
 import 'screens/login_screen.dart';
 import 'screens/home_screen.dart';
 
@@ -47,17 +50,40 @@ class MyApp extends StatelessWidget {
             ),
           );
         }
+
         return MultiProvider(
-           providers: [
-    ChangeNotifierProvider(create: (_) => WalletProvider()),
-    ChangeNotifierProvider(create: (_) => HomeScreenProvider()),
-    ChangeNotifierProvider(create: (_) => TransactionListProvider()),
-     ChangeNotifierProvider(create: (_) => MonthSelectionProvider()),  // <-- Add this line
-    ChangeNotifierProxyProvider<WalletProvider, AuthProvider>(
-      create: (context) => AuthProvider(walletProvider: context.read<WalletProvider>()),
-      update: (context, walletProvider, authProvider) => authProvider ?? AuthProvider(walletProvider: walletProvider),
-    ),
-  ],
+          providers: [
+            // 1) WalletProvider loads your wallet & memberData
+            ChangeNotifierProvider(create: (_) => WalletProvider()),
+
+            // 2) HomeScreenProvider proxies WalletProvider to pre-fetch names
+            ChangeNotifierProxyProvider<WalletProvider, HomeScreenProvider>(
+              create: (_) => HomeScreenProvider(),
+              update: (context, walletProv, homeProv) {
+                homeProv ??= HomeScreenProvider();
+                // As soon as memberData is available, call fetchUserDisplayName once per UID:
+                for (var m in walletProv.memberData) {
+                  final uid = m['uid']!;
+                  if (homeProv.getCachedUserDisplayName(uid) == null) {
+                    homeProv.fetchUserDisplayName(uid);
+                  }
+                }
+                return homeProv;
+              },
+            ),
+
+            // 3) Other providers
+            ChangeNotifierProvider(create: (_) => TransactionListProvider()),
+            ChangeNotifierProvider(create: (_) => MonthSelectionProvider()),
+
+            // 4) AuthProvider depends on WalletProvider (as you had it)
+            ChangeNotifierProxyProvider<WalletProvider, AuthProvider>(
+              create: (context) =>
+                  AuthProvider(walletProvider: context.read<WalletProvider>()),
+              update: (context, walletProv, authProv) =>
+                  authProv ?? AuthProvider(walletProvider: walletProv),
+            ),
+          ],
           child: MaterialApp(
             title: 'Expense Tracker',
             theme: ThemeData(
@@ -70,7 +96,8 @@ class MyApp extends StatelessWidget {
               ),
               elevatedButtonTheme: ElevatedButtonThemeData(
                 style: ElevatedButton.styleFrom(
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
                   padding: const EdgeInsets.symmetric(vertical: 15),
                 ),
               ),
@@ -93,7 +120,9 @@ class MyApp extends StatelessWidget {
                   case AuthStatus.error:
                     return Scaffold(
                       body: Center(
-                        child: Text('Error: ${auth.errorMessage ?? "An error occurred"}'),
+                        child: Text(
+                          'Error: ${auth.errorMessage ?? "An error occurred"}',
+                        ),
                       ),
                     );
                   default:

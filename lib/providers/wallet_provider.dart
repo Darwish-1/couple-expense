@@ -5,6 +5,8 @@ import 'package:firebase_auth/firebase_auth.dart' hide AuthProvider;
 import 'auth_provider.dart';
 
 class WalletProvider extends ChangeNotifier {
+   String _partnerName = '';
+  String get partnerName => _partnerName;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   String? walletId;
   String? errorMessage;
@@ -74,6 +76,7 @@ class WalletProvider extends ChangeNotifier {
         members.add(userId);
         await walletRef.update({'members': members});
       }
+    _updatePartnerName();  // ← and also here
 
       walletId = walletIdToJoin;
       await Provider.of<AuthProvider>(context, listen: false).updateWalletId(walletId);
@@ -87,8 +90,10 @@ class WalletProvider extends ChangeNotifier {
       errorMessage = 'Error joining wallet';
       loading = false;
       debugPrint('Join wallet error: $e');
+      
       notifyListeners();
       return false;
+      
     }
   }
 
@@ -247,11 +252,14 @@ class WalletProvider extends ChangeNotifier {
         wallet = query.docs.first;
         walletId = wallet!.id;
         await fetchMemberEmails(wallet!['members']);
-        debugPrint('Wallet fetched with ID: $walletId');
+   _updatePartnerName();                   // ← now that memberData is ready
+       debugPrint('Wallet fetched with ID: $walletId (partner: $_partnerName)');
       } else {
         wallet = null;
         walletId = null;
         memberData.clear();
+        _partnerName = '';                      // ← no partner when no wallet
+
         debugPrint('No wallet found for user: $userId');
       }
       errorMessage = null;
@@ -265,29 +273,59 @@ class WalletProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> fetchMemberEmails(List<dynamic> memberUids) async {
-    memberData.clear();
-    const batchSize = 10;
-    for (var i = 0; i < memberUids.length; i += batchSize) {
-      final batchUids = memberUids.sublist(i, i + batchSize > memberUids.length ? memberUids.length : i + batchSize);
-      try {
-        await Future.delayed(const Duration(milliseconds: 50)); // Prevent main thread blocking
-        final query = await _firestore
-            .collection('users')
-            .where(FieldPath.documentId, whereIn: batchUids)
-            .get();
-        for (var doc in query.docs) {
-          final String email = (doc.data() as Map<String, dynamic>?)?['email']?.toString() ?? 'Unknown User';
-          memberData.add({'uid': doc.id, 'email': email});
+     Future<void> fetchMemberEmails(List<dynamic> memberUids) async {
+     memberData.clear();
+     const batchSize = 10;
+     for (var i = 0; i < memberUids.length; i += batchSize) {
+       final batchUids = memberUids.sublist(
+         i,
+         i + batchSize > memberUids.length
+             ? memberUids.length
+             : i + batchSize,
+       );
+       try {
+         await Future.delayed(const Duration(milliseconds: 50));
+         final query = await _firestore
+             .collection('users')
+             .where(FieldPath.documentId, whereIn: batchUids)
+             .get();
+
+         for (var doc in query.docs) {
+
+          final data = doc.data() as Map<String, dynamic>;
+          final email = (data['email'] as String?) ?? 'unknown@…';
+          // if you store full name under "name", fall back to the part before the @
+          final name =
+              (data['name'] as String?)?.split(' ').first.trim() ??
+              email.split('@').first;
+          memberData.add({
+            'uid': doc.id,
+            'email': email,
+            'name': name[0].toUpperCase() + name.substring(1).toLowerCase(),
+          });
         }
-        debugPrint('Fetched member emails for UIDs: $batchUids');
+       debugPrint('Fetched member profiles for UIDs: $batchUids');
       } catch (e) {
         for (var uid in batchUids) {
-          memberData.add({'uid': uid.toString(), 'email': 'Unknown User'});
-        }
-        debugPrint('Fetch member emails error: $e');
-      }
-    }
+          memberData.add({
+            'uid': uid.toString(),
+            'email': 'unknown@…',
+            'name': 'Unknown',
+          });
+         }
+         debugPrint('Fetch member emails error: $e');
+       }
+     }
+     notifyListeners();
+   }
+    void _updatePartnerName() {
+    final currentUid = FirebaseAuth.instance.currentUser?.uid;
+    final other = memberData.firstWhere(
+      (m) => m['uid'] != currentUid,
+      orElse: () => {'name': 'Partner'},
+    );
+    _partnerName = other['name']!;
     notifyListeners();
   }
-}
+
+}  

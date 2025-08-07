@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:couple_expenses/providers/month_selection_provider.dart';
 import 'package:couple_expenses/providers/transaction_list_provider.dart';
+import 'package:couple_expenses/providers/wallet_provider.dart';
 import 'package:couple_expenses/screens/month_picker.dart';
 import 'package:couple_expenses/widgets/home_screen_widgets/monthly_transaction_list.dart';
 import 'package:couple_expenses/widgets/home_screen_widgets/recording_section.dart';
@@ -46,13 +47,30 @@ class _HomeScreenContent extends StatefulWidget {
 }
 
 class __HomeScreenContentState extends State<_HomeScreenContent> {
+    bool _didPrefetchNames = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+
+    final walletProv = context.watch<WalletProvider>();
+    // only once, after we have memberData
+    if (!_didPrefetchNames && !walletProv.loading && walletProv.memberData.isNotEmpty) {
+      final homeProv = context.read<HomeScreenProvider>();
+      for (var m in walletProv.memberData) {
+        final uid = m['uid']!;
+        homeProv.fetchUserDisplayName(uid);
+      }
+      _didPrefetchNames = true;
+    }
+  }
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final authProvider = Provider.of<AuthProvider>(context, listen: false);
-      Provider.of<TransactionListProvider>(context, listen: false)
-          .initializeStream(context, widget.userId, authProvider.walletId, false);
+      final authProv = context.read<AuthProvider>();
+      context.read<TransactionListProvider>()
+        .initializeStream(context, widget.userId, authProv.walletId, false);
     });
   }
 

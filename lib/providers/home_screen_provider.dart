@@ -403,6 +403,10 @@ static double calculateReceiptTotal(Map<String, dynamic> data) {
   }
   return 0.0;
 }
+  String? getCachedUserDisplayName(String userId) =>
+      _userNameCache[userId];
+
+      
 void clearCaches() {
   _userNameCache.clear();
 }

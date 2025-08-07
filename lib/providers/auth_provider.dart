@@ -220,6 +220,9 @@ class AuthProvider extends ChangeNotifier {
       notifyListeners();
     }
   }
+    void updateWalletProvider(WalletProvider walletProvider) {
+    _walletProvider = walletProvider;
+  }
 
   void showError(BuildContext context) {
     if (errorMessage != null) {
