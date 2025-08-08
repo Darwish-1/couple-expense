@@ -113,7 +113,7 @@ class MonthlyTransactionList extends StatelessWidget {
                     print('🏠 [DEBUG] CommonTransactionList generateCacheKey called, returning: $key');
                     return key;
                   },
-                  borderColor: Colors.blue.shade400,
+              //    borderColor: Colors.blue.shade400,
                 ),
               ],
             ),

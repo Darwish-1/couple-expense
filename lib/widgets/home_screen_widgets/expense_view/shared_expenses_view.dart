@@ -28,16 +28,20 @@ class SharedExpensesView extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _SharedExpensesTotalCard(userId: userId),
-        const SizedBox(height: 16),
-        Text(
-          'Transactions',
-          style: GoogleFonts.inter(
-            fontSize: 18,
-            fontWeight: FontWeight.w600,
-            color: Colors.indigo.shade700,
+        const SizedBox(height: 24),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: Text(
+            'Recent Transactions',
+            style: GoogleFonts.inter(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              color: Colors.grey[800],
+              letterSpacing: -0.3,
+            ),
           ),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 12),
         _SharedExpensesTransactionList(userId: userId),
       ],
     );
@@ -55,54 +59,50 @@ class _SharedExpensesTotalCard extends StatefulWidget {
       _SharedExpensesTotalCardState();
 }
 
-class _SharedExpensesTotalCardState extends State<_SharedExpensesTotalCard> {
+class _SharedExpensesTotalCardState extends State<_SharedExpensesTotalCard>
+    with TickerProviderStateMixin {
   late NumberFormat _currencyFormatter;
-  bool _showPieChart = false;
   String? _highlightedUserId;
+  late AnimationController _pulseController;
+  late AnimationController _slideController;
 
   @override
   void initState() {
     super.initState();
-    _currencyFormatter =
-        NumberFormat.currency(symbol: '\$', decimalDigits: 2);
+    _currencyFormatter = NumberFormat.currency(symbol: '\$', decimalDigits: 2);
+    _pulseController = AnimationController(
+      duration: const Duration(milliseconds: 600),
+      vsync: this,
+    );
+    _slideController = AnimationController(
+      duration: const Duration(milliseconds: 400),
+      vsync: this,
+    );
+    _slideController.forward();
+  }
+
+  @override
+  void dispose() {
+    _pulseController.dispose();
+    _slideController.dispose();
+    super.dispose();
   }
 
   void _toggleHighlight(String userId) {
     setState(() {
       _highlightedUserId = (_highlightedUserId == userId) ? null : userId;
     });
-    // Update the transaction list filter whenever highlight changes
+    _pulseController.forward().then((_) => _pulseController.reverse());
+    
     final homeProv = context.read<HomeScreenProvider>();
     final authProv = context.read<AuthProvider>();
-    context
-        .read<TransactionListProvider>()
-        .setUserFilter(
+    context.read<TransactionListProvider>().setUserFilter(
           _highlightedUserId,
           context,
           widget.userId,
           authProv.walletId,
           homeProv.showWalletReceipts,
         );
-  }
-
-  int _monthFromString(String month) {
-    final m = int.tryParse(month);
-    if (m != null && m >= 1 && m <= 12) return m;
-    const names = {
-      'january': 1,
-      'february': 2,
-      'march': 3,
-      'april': 4,
-      'may': 5,
-      'june': 6,
-      'july': 7,
-      'august': 8,
-      'september': 9,
-      'october': 10,
-      'november': 11,
-      'december': 12,
-    };
-    return names[month.toLowerCase()] ?? DateTime.now().month;
   }
 
   @override
@@ -125,20 +125,21 @@ class _SharedExpensesTotalCardState extends State<_SharedExpensesTotalCard> {
           ),
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
-          return const Center(child: CircularProgressIndicator());
+          return _buildLoadingCard();
         }
         if (snapshot.hasError) {
-          return Center(child: Text('Error: ${snapshot.error}'));
+          return _buildErrorCard(snapshot.error.toString());
         }
         final docs = snapshot.data!;
 
-        // Compute per‐user sums
         final sums = <String, double>{};
+        int totalTransactions = 0;
         for (var doc in docs) {
           final data = doc.data() as Map<String, dynamic>;
           final uid = data['userId'] as String? ?? 'Unknown';
           final amt = HomeScreenProvider.calculateReceiptTotal(data);
           sums[uid] = (sums[uid] ?? 0) + amt;
+          totalTransactions++;
         }
 
         final youTotal = sums[currentUserId] ?? 0.0;
@@ -149,242 +150,450 @@ class _SharedExpensesTotalCardState extends State<_SharedExpensesTotalCard> {
         final partnerId = otherEntry.key;
         final partnerTotal = otherEntry.value;
         final partnerName = walletProv.partnerName;
+        final totalSpent = youTotal + partnerTotal;
+        final youPercentage = totalSpent > 0 ? (youTotal / totalSpent) * 100 : 50.0;
+        final partnerPercentage = totalSpent > 0 ? (partnerTotal / totalSpent) * 100 : 50.0;
 
-        return Card(
-          color: Colors.white,
-          elevation: 1,
-          shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12)),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              // —————— Toggle Pie vs Totals ——————
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  TextButton(
-                    onPressed: () =>
-                        setState(() => _showPieChart = !_showPieChart),
-                    child: _showPieChart
-                        ? Icon(Icons.bar_chart,
-                            color: Colors.indigo.shade700)
-                        : Text(
-                            'Pie',
-                            style: GoogleFonts.inter(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.indigo.shade700,
-                            ),
-                          ),
-                  ),
+        return SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(0, 0.3),
+            end: Offset.zero,
+          ).animate(CurvedAnimation(
+            parent: _slideController,
+            curve: Curves.easeOutCubic,
+          )),
+          child: Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  Colors.grey[50]!,
+                  Colors.white,
                 ],
               ),
-
-              // —————— Pie Chart Breakdown ——————
-              if (_showPieChart)
-                SizedBox(
-                  height: 150,
-                  child: (youTotal + partnerTotal) > 0
-                      ? PieChart(
-                          PieChartData(
-                            sections: [
-                              PieChartSectionData(
-                                value: youTotal,
-                                color: _highlightedUserId ==
-                                        currentUserId
-                                    ? Colors.indigo.shade900
-                                    : (_highlightedUserId == null
-                                        ? Colors.indigo.shade700
-                                        : Colors.indigo.shade300),
-                                title: 'You',
-                                radius: _highlightedUserId ==
-                                        currentUserId
-                                    ? 65
-                                    : 60,
-                                titleStyle: GoogleFonts.inter(
-                                  fontSize: _highlightedUserId ==
-                                          currentUserId
-                                      ? 14
-                                      : 12,
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                              if (partnerTotal > 0)
-                                PieChartSectionData(
-                                  value: partnerTotal,
-                                  color:
-                                      _highlightedUserId == partnerId
-                                          ? Colors.teal.shade600
-                                          : (_highlightedUserId ==
-                                                  null
-                                              ? Colors.teal.shade400
-                                              : Colors.teal.shade200),
-                                  title: partnerName,
-                                  radius: _highlightedUserId ==
-                                          partnerId
-                                      ? 65
-                                      : 60,
-                                  titleStyle: GoogleFonts.inter(
-                                    fontSize:
-                                        _highlightedUserId ==
-                                                partnerId
-                                            ? 14
-                                            : 12,
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                            ],
-                            sectionsSpace: 2,
-                            centerSpaceRadius: 40,
-                          ),
-                        )
-                      : Center(child: Text('No shared expenses')),
-                )
-              // —————— Big Totals View ——————
-              else
-                Column(
-                  children: [
-                    // ← Label ABOVE the number again:
-                    Text(
-                      _highlightedUserId != null
-                          ? (_highlightedUserId == currentUserId
-                              ? 'Your spending'
-                              : '$partnerName\'s spending')
-                          : 'Combined spending',
-                      style: GoogleFonts.inter(
-                        fontSize: 24,
-                        fontWeight: FontWeight.w500,
-                        color: Colors.grey.shade600,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Text(
-                      _currencyFormatter.format(
-                        _highlightedUserId == currentUserId
-                            ? youTotal
-                            : partnerTotal,
-                      ),
-                      style: GoogleFonts.inter(
-                        fontSize: 20,
-                        fontWeight: FontWeight.w700,
-                        color: _highlightedUserId ==
-                                currentUserId
-                            ? Colors.indigo.shade700
-                            : Colors.teal.shade400,
-                      ),
-                    ),
-                  ],
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(
+                color: Colors.grey[200]!,
+                width: 1,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.04),
+                  blurRadius: 20,
+                  offset: const Offset(0, 8),
                 ),
-
-              const SizedBox(height: 16),
-
-              // —————— “You” / “Partner” Segments ——————
-              Row(
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.02),
+                  blurRadius: 4,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Expanded(
-                    child: _buildUserSegment(
-                      context,
-                      label: 'You',
-                      userId: currentUserId,
-                      total: youTotal,
-                      color: Colors.indigo.shade700,
-                      isHighlighted:
-                          _highlightedUserId == currentUserId,
-                      onTap: () => _toggleHighlight(currentUserId),
-                    ),
+                  _buildHeader(selectedMonth, selectedYear.toString()),
+                  const SizedBox(height: 24),
+                  _buildMainMetrics(totalSpent, totalTransactions),
+                  const SizedBox(height: 24),
+                  _buildProgressIndicator(youTotal, partnerTotal, youPercentage, partnerPercentage),
+                  const SizedBox(height: 20),
+                  _buildUserCards(
+                    youTotal,
+                    partnerTotal,
+                    youPercentage,
+                    partnerPercentage,
+                    currentUserId,
+                    partnerId,
+                    partnerName,
                   ),
-                  const SizedBox(width: 8),
-                  if (partnerTotal > 0)
-                    Expanded(
-                      child: _buildUserSegment(
-                        context,
-                        label: partnerName,
-                        userId: partnerId,
-                        total: partnerTotal,
-                        color: Colors.teal.shade400,
-                        isHighlighted:
-                            _highlightedUserId == partnerId,
-                        onTap: () => _toggleHighlight(partnerId),
-                      ),
-                    ),
                 ],
               ),
-            ]),
+            ),
           ),
         );
       },
     );
   }
 
-  Widget _buildUserSegment(
-    BuildContext context, {
-    required String label,
-    required String userId,
-    required double total,
-    required Color color,
-    required bool isHighlighted,
-    required VoidCallback onTap,
-  }) {
-    Color cardColor = Colors.white;
-    Color borderColor = Colors.grey.shade200;
-    double elevation = 1;
-    Color textColor = color;
+  Widget _buildLoadingCard() {
+    return Container(
+      height: 280,
+      decoration: BoxDecoration(
+        color: Colors.grey[50],
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: Colors.grey[200]!),
+      ),
+      child: const Center(
+        child: CircularProgressIndicator(
+          strokeWidth: 2,
+          color: Colors.blue,
+        ),
+      ),
+    );
+  }
 
-    if (isHighlighted) {
-      cardColor = color.withOpacity(0.1);
-      borderColor = color;
-      elevation = 3;
-      textColor = color.withOpacity(0.9);
-    } else if (_highlightedUserId != null && !isHighlighted) {
-      cardColor = Colors.grey.shade50;
-      textColor = color.withOpacity(0.5);
-    }
-
-    return Hero(
-      tag: 'shared-segment-$userId',
-      child: GestureDetector(
-        onTap: onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          child: Card(
-            color: cardColor,
-            elevation: elevation,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
-              side: BorderSide(
-                color: borderColor,
-                width: isHighlighted ? 2 : 1,
-              ),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(
-                  vertical: 12, horizontal: 8),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    label,
-                    style: GoogleFonts.inter(
-                      fontSize: isHighlighted ? 14 : 12,
-                      fontWeight: FontWeight.w600,
-                      color: textColor,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    _currencyFormatter.format(total),
-                    style: GoogleFonts.inter(
-                      fontSize: isHighlighted ? 16 : 14,
-                      fontWeight: FontWeight.w700,
-                      color: textColor,
-                    ),
-                  ),
-                ],
+  Widget _buildErrorCard(String error) {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: Colors.red[50],
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: Colors.red[200]!),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.error_outline, color: Colors.red[400], size: 24),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              'Unable to load data',
+              style: GoogleFonts.inter(
+                color: Colors.red[700],
+                fontWeight: FontWeight.w500,
               ),
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHeader(String selectedMonth, String selectedYear) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Shared Expenses',
+              style: GoogleFonts.inter(
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                color: Colors.grey[800],
+                letterSpacing: -0.5,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              '$selectedMonth $selectedYear',
+              style: GoogleFonts.inter(
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+                color: Colors.grey[500],
+                letterSpacing: -0.2,
+              ),
+            ),
+          ],
+        ),
+        Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: Colors.blue[50],
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Icon(
+            Icons.account_balance_wallet_outlined,
+            color: Colors.blue[600],
+            size: 20,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMainMetrics(double totalSpent, int totalTransactions) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        Expanded(
+          flex: 2,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Total Spent',
+                style: GoogleFonts.inter(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                  color: Colors.grey[600],
+                  letterSpacing: -0.2,
+                ),
+              ),
+              const SizedBox(height: 4),
+              AnimatedBuilder(
+                animation: _pulseController,
+                builder: (context, child) {
+                  return Transform.scale(
+                    scale: 1.0 + (_pulseController.value * 0.05),
+                    child: Text(
+                      _currencyFormatter.format(totalSpent),
+                      style: GoogleFonts.inter(
+                        fontSize: 28,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.grey[800],
+                        letterSpacing: -1.0,
+                        height: 1.1,
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: Colors.grey[100],
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.receipt_outlined,
+                size: 14,
+                color: Colors.grey[600],
+              ),
+              const SizedBox(width: 4),
+              Text(
+                '$totalTransactions transactions',
+                style: GoogleFonts.inter(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.grey[600],
+                  letterSpacing: -0.1,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildProgressIndicator(double youTotal, double partnerTotal, double youPercentage, double partnerPercentage) {
+    if (youTotal + partnerTotal == 0) return const SizedBox.shrink();
+    
+    return Column(
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              'Spending Split',
+              style: GoogleFonts.inter(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: Colors.grey[700],
+                letterSpacing: -0.2,
+              ),
+            ),
+            Text(
+              '${youPercentage.toInt()}% • ${partnerPercentage.toInt()}%',
+              style: GoogleFonts.inter(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Colors.grey[500],
+                letterSpacing: -0.1,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Container(
+          height: 6,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(3),
+            color: Colors.grey[200],
+          ),
+          child: Row(
+            children: [
+              if (youPercentage > 0)
+                Expanded(
+                  flex: youPercentage.round(),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      borderRadius: const BorderRadius.only(
+                        topLeft: Radius.circular(3),
+                        bottomLeft: Radius.circular(3),
+                      ),
+                      gradient: LinearGradient(
+                        colors: [
+                          Colors.blue[400]!,
+                          Colors.blue[500]!,
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              if (partnerPercentage > 0)
+                Expanded(
+                  flex: partnerPercentage.round(),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      borderRadius: const BorderRadius.only(
+                        topRight: Radius.circular(3),
+                        bottomRight: Radius.circular(3),
+                      ),
+                      gradient: LinearGradient(
+                        colors: [
+                          Colors.teal[400]!,
+                          Colors.teal[500]!,
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildUserCards(
+    double youTotal,
+    double partnerTotal,
+    double youPercentage,
+    double partnerPercentage,
+    String currentUserId,
+    String partnerId,
+    String partnerName,
+  ) {
+    return Row(
+      children: [
+        Expanded(
+          child: _ModernUserCard(
+            label: 'You',
+            total: youTotal,
+            percentage: youPercentage,
+            primaryColor: Colors.blue,
+            isHighlighted: _highlightedUserId == currentUserId,
+            onTap: () => _toggleHighlight(currentUserId),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: _ModernUserCard(
+            label: partnerName,
+            total: partnerTotal,
+            percentage: partnerPercentage,
+            primaryColor: Colors.teal,
+            isHighlighted: _highlightedUserId == partnerId,
+            onTap: () => _toggleHighlight(partnerId),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ModernUserCard extends StatelessWidget {
+  final String label;
+  final double total;
+  final double percentage;
+  final MaterialColor primaryColor;
+  final bool isHighlighted;
+  final VoidCallback onTap;
+
+  const _ModernUserCard({
+    required this.label,
+    required this.total,
+    required this.percentage,
+    required this.primaryColor,
+    required this.isHighlighted,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOutCubic,
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: isHighlighted ? primaryColor[50] : Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: isHighlighted ? primaryColor[300]! : Colors.grey[200]!,
+            width: isHighlighted ? 1.5 : 1,
+          ),
+          boxShadow: isHighlighted
+              ? [
+                  BoxShadow(
+                    color: primaryColor[200]!.withOpacity(0.3),
+                    blurRadius: 12,
+                    offset: const Offset(0, 4),
+                  ),
+                ]
+              : [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.02),
+                    blurRadius: 6,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: isHighlighted ? primaryColor[100] : Colors.grey[100],
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(
+                    Icons.person_outline,
+                    size: 14,
+                    color: isHighlighted ? primaryColor[600] : Colors.grey[600],
+                  ),
+                ),
+                if (percentage > 0)
+                  Text(
+                    '${percentage.toInt()}%',
+                    style: GoogleFonts.inter(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: isHighlighted ? primaryColor[600] : Colors.grey[500],
+                      letterSpacing: -0.1,
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              label,
+              style: GoogleFonts.inter(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: isHighlighted ? primaryColor[700] : Colors.grey[600],
+                letterSpacing: -0.2,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              NumberFormat.currency(symbol: '\$', decimalDigits: 2).format(total),
+              style: GoogleFonts.inter(
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+                color: isHighlighted ? primaryColor[800] : Colors.grey[800],
+                letterSpacing: -0.5,
+                height: 1.1,
+              ),
+            ),
+          ],
         ),
       ),
     );

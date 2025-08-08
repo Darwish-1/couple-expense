@@ -12,7 +12,8 @@ class TransactionListProvider extends ChangeNotifier {
   
   // Cache for monthly totals: {cacheKey: Map<String, double>}
   final Map<String, Map<String, double>> _totalsByUserCache = {};
-  
+    final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+
   // Stream management
   Stream<QuerySnapshot>? _expensesStream;
   List<DocumentSnapshot> _allDocs = [];
@@ -166,6 +167,41 @@ void addNewDocumentsToCache(List<Map<String, dynamic>> newExpenseData, String mo
         print('📚 [DEBUG] Fetching personal expenses for userId: $userId');
         docs = await _fetchExpensesForMonth(month, year, userId);
       }
+      
+      // --- NEW: FETCH AND CACHE USER NAMES ---
+      // After fetching transactions, we gather all unique user IDs to fetch their names.
+      final userIds = docs
+          .map((doc) => (doc.data() as Map<String, dynamic>)['userId'] as String?)
+          .where((id) => id != null) // Filter out any null IDs
+          .toSet();
+
+      if (userIds.isNotEmpty) {
+        // Find which user IDs we haven't cached the name for yet.
+        final idsToFetch = userIds.where((id) => _userNames[id] == null).toList();
+
+        if (idsToFetch.isNotEmpty) {
+          try {
+            print('📚 [DEBUG] Fetching names for user IDs: $idsToFetch');
+            final usersSnapshot = await _firestore
+                .collection('users') // Assumes a 'users' collection
+                .where(FieldPath.documentId, whereIn: idsToFetch)
+                .get();
+
+            for (var userDoc in usersSnapshot.docs) {
+              final data = userDoc.data();
+              // Use 'name' or 'displayName', providing a fallback.
+              final name = data['name'] ?? data['displayName'] ?? 'Unknown User';
+              _userNames[userDoc.id] = name;
+            }
+            print('📚 [DEBUG] Successfully cached names for ${usersSnapshot.docs.length} users.');
+          } catch (e) {
+            print('🔥 [ERROR] Failed to fetch user names: $e');
+            // We log the error but don't stop the process.
+            // The UI will show a default value for names that failed to load.
+          }
+        }
+      }
+      // --- END NEW SECTION ---
 
       print('📚 [DEBUG] Fetched ${docs.length} documents');
       _permanentCache[cacheKey] = docs;
@@ -173,7 +209,7 @@ void addNewDocumentsToCache(List<Map<String, dynamic>> newExpenseData, String mo
       
       print('📚 [DEBUG] ${forceReload ? 'Force reloaded' : 'Loaded'} ${docs.length} transactions for cache key: $cacheKey');
     } catch (e) {
-      print('📚 [DEBUG] Error loading transactions for $cacheKey: $e');
+      print('🔥 [ERROR] Error loading transactions for $cacheKey: $e');
       _permanentCache[cacheKey] = [];
     }
 
@@ -181,7 +217,7 @@ void addNewDocumentsToCache(List<Map<String, dynamic>> newExpenseData, String mo
     print('📚 [DEBUG] Loading complete, calling notifyListeners');
     notifyListeners();
   }
-  // Force refresh a specific cache (used after edits)
+// Force refresh a specific cache (used after edits)
   Future<void> refreshCache(String cacheKey) async {
     // Parse cache key to get the parameters
     final parts = cacheKey.split('-');
@@ -453,7 +489,9 @@ void debugCacheState() {
     }
     print('🔍 [DEBUG] === END CACHE STATE DEBUG ===');
   }
+ final Map<String, String> _userNames = {}; // Cache for userId -> name
 
+  String? getUserName(String userId) => _userNames[userId];
 
 
 void invalidateCacheForMonth(String month, int year) {
