@@ -19,6 +19,8 @@ class MonthlyTransactionList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+        print('🏠 [DEBUG] MonthlyTransactionList building for userId: $userId');
+
     return Consumer<MonthSelectionProvider>(
       builder: (context, monthProv, _) {
         final selectedMonth = monthProv.selectedMonth;
@@ -27,7 +29,49 @@ class MonthlyTransactionList extends StatelessWidget {
         final currentWallet = context.watch<AuthProvider>().walletId;
         final txnProv = context.watch<TransactionListProvider>();
         final filterUserId = txnProv.selectedUserFilter;
+        final refreshTrigger = txnProv.refreshTrigger; // ← Watch refresh trigger
 
+        print('🏠 [DEBUG] MonthlyTransactionList Consumer rebuild');
+        print('🏠 [DEBUG] - selectedMonth: $selectedMonth');
+        print('🏠 [DEBUG] - selectedYear: $selectedYear');
+        print('🏠 [DEBUG] - showShared: $showShared');
+        print('🏠 [DEBUG] - currentWallet: $currentWallet');
+        print('🏠 [DEBUG] - filterUserId: $filterUserId');
+        print('🏠 [DEBUG] - refreshTrigger: $refreshTrigger');
+
+        final cacheKey = _generateCacheKey(
+          userId,
+          showShared,
+          currentWallet,
+          filterUserId,
+          selectedMonth,
+          selectedYear,
+        );
+
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          txnProv.ensureMonthlyTransactionsLoaded(
+            cacheKey:      cacheKey,
+            month:         selectedMonth,
+            year:          selectedYear,
+            userId:        userId,
+            showShared:    showShared,
+            walletId:      currentWallet,
+            filterUserId:  filterUserId,
+            forceReload:   true,
+          );
+        });
+
+        
+        print('🏠 [DEBUG] Generated cache key: $cacheKey');
+        
+        final currentCacheData = txnProv.getTransactionsForCache(cacheKey);
+        print('🏠 [DEBUG] Current cache data length: ${currentCacheData.length}');
+
+        final valueKey = '${userId}_${selectedMonth}_${selectedYear}_'
+            '${showShared}_${currentWallet ?? 'noWallet'}_'
+            '${filterUserId ?? 'noFilter'}_$refreshTrigger';
+            
+        print('🏠 [DEBUG] ValueKey for CommonTransactionList: $valueKey');
         return Card(
           color: Colors.white,
           elevation: 1,
@@ -49,36 +93,41 @@ class MonthlyTransactionList extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 8),
-                CommonTransactionList(
-                  key: ValueKey(
-                    '${userId}_${selectedMonth}_${selectedYear}_'
-                    '${showShared}_${currentWallet ?? 'noWallet'}_'
-                    '${filterUserId ?? 'noFilter'}',
-                  ),
+               CommonTransactionList(
+                  key: ValueKey(valueKey),
                   selectedMonth: selectedMonth,
                   selectedYear: selectedYear,
                   userId: userId,
                   showShared: showShared,
                   walletId: currentWallet,
                   filterUserId: filterUserId,
-                  generateCacheKey: () => _generateCacheKey(
-                    userId,
-                    showShared,
-                    currentWallet,
-                    filterUserId,
-                    selectedMonth,
-                    selectedYear,
-                  ),
-                  borderColor: Colors.blue.shade400, // Default color, will be overridden for shared
+                  generateCacheKey: () {
+                    final key = _generateCacheKey(
+                      userId,
+                      showShared,
+                      currentWallet,
+                      filterUserId,
+                      selectedMonth,
+                      selectedYear,
+                    );
+                    print('🏠 [DEBUG] CommonTransactionList generateCacheKey called, returning: $key');
+                    return key;
+                  },
+                  borderColor: Colors.blue.shade400,
                 ),
               ],
             ),
           ),
+        
+              
+            
+      
         );
       },
     );
   }
 
+  
   String _generateCacheKey(
     String userId,
     bool showShared,
@@ -87,10 +136,12 @@ class MonthlyTransactionList extends StatelessWidget {
     String selectedMonth,
     int selectedYear,
   ) {
-    return '$userId-'
+    final key = '$userId-'
            '${showShared ? 'shared' : 'personal'}-'
            '${currentWallet ?? 'nowallet'}-'
            '${filterUserId ?? 'nofilter'}-'
            '$selectedMonth-$selectedYear';
+    print('🏠 [DEBUG] _generateCacheKey returning: $key');
+    return key;
   }
 }

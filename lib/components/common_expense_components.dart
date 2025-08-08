@@ -415,6 +415,10 @@ class CommonTransactionListWrapper extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+      final txnProv   = context.watch<TransactionListProvider>();
+  final refresh   = txnProv.refreshTrigger;
+      final wrapperKey = '${_generateKey()}_$refresh';
+
     return Card(
       color: Colors.white,
       elevation: 1,
@@ -437,7 +441,7 @@ class CommonTransactionListWrapper extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             CommonTransactionList(
-              key: ValueKey(_generateKey()),
+            key: ValueKey(wrapperKey),      // ← refreshed whenever refreshTrigger bumps
               selectedMonth: selectedMonth,
               selectedYear: selectedYear,
               userId: userId,

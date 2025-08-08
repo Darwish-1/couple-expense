@@ -26,6 +26,18 @@ class TransactionListProvider extends ChangeNotifier {
   String? _selectedUserFilter;
   Map<String, double> _totalByUser = {};
   String? lastAddedId;
+ int _refreshTrigger = 0;
+
+
+
+
+  int get refreshTrigger => _refreshTrigger;
+    void triggerRefresh() {
+    _refreshTrigger++;
+    print('🔄 [DEBUG] triggerRefresh called - new value: $_refreshTrigger');
+    notifyListeners();
+    print('🔄 [DEBUG] notifyListeners called after triggerRefresh');
+  }
 
   // Getters
   List<DocumentSnapshot> get allDocs => _allDocs;
@@ -38,6 +50,50 @@ class TransactionListProvider extends ChangeNotifier {
     lastAddedId = id;
     notifyListeners();
   }
+
+
+
+void addNewDocumentsToCache(List<Map<String, dynamic>> newExpenseData, String month, int year) {
+    // Convert the expense data to mock DocumentSnapshots for immediate display
+    // This is a temporary solution until Firestore sync happens
+    
+    for (var expenseData in newExpenseData) {
+      // Find all relevant cache keys that should show this expense
+      for (var cacheKey in _permanentCache.keys.toList()) {
+        final parts = cacheKey.split('-');
+        if (parts.length != 6) continue;
+        
+        final cacheMonth = parts[4];
+        final cacheYear = int.tryParse(parts[5]);
+        
+        // Only add to caches for the current month/year
+        if (cacheMonth.toLowerCase() == month.toLowerCase() && cacheYear == year) {
+          // Create a temporary document ID for immediate display
+          final tempDocId = 'temp_${DateTime.now().millisecondsSinceEpoch}';
+          
+          // Add the expense data with Firestore-like structure
+          final docData = Map<String, dynamic>.from(expenseData);
+          
+          // Create a mock DocumentSnapshot (simplified)
+          // In a real implementation, you might want to create a proper mock
+          // For now, we'll add to a separate "pending" list
+          
+          // Add to beginning of cache (newest first)
+          // Note: This is simplified - you'd need proper DocumentSnapshot mocking
+        }
+      }
+    }
+    
+    notifyListeners();
+  }
+
+
+
+
+
+
+
+
 
   int _monthFromString(String month) {
     const months = {
@@ -68,7 +124,7 @@ class TransactionListProvider extends ChangeNotifier {
   }
 
   // Ensure transactions are loaded for a specific month/filter combination
-  Future<void> ensureMonthlyTransactionsLoaded({
+ Future<void> ensureMonthlyTransactionsLoaded({
     required String cacheKey,
     required String month,
     required int year,
@@ -76,17 +132,27 @@ class TransactionListProvider extends ChangeNotifier {
     required bool showShared,
     String? walletId,
     String? filterUserId,
+    bool forceReload = false,
   }) async {
-    // If we already have data for this cache key, don't reload
-    if (_permanentCache.containsKey(cacheKey) && _permanentCache[cacheKey]!.isNotEmpty) {
+    print('📚 [DEBUG] ensureMonthlyTransactionsLoaded called');
+    print('📚 [DEBUG] cacheKey: $cacheKey');
+    print('📚 [DEBUG] forceReload: $forceReload');
+    print('📚 [DEBUG] Current cache has data: ${_permanentCache.containsKey(cacheKey) && _permanentCache[cacheKey]!.isNotEmpty}');
+    print('📚 [DEBUG] Currently loading: ${_loadingStates[cacheKey] == true}');
+    
+    // If we already have data for this cache key and not forcing reload, don't reload
+    if (!forceReload && _permanentCache.containsKey(cacheKey) && _permanentCache[cacheKey]!.isNotEmpty) {
+      print('📚 [DEBUG] Skipping load - cache exists and not forcing reload');
       return;
     }
 
     // If we're already loading this cache, don't start another load
     if (_loadingStates[cacheKey] == true) {
+      print('📚 [DEBUG] Skipping load - already loading');
       return;
     }
 
+    print('📚 [DEBUG] Starting to load data...');
     _loadingStates[cacheKey] = true;
     notifyListeners();
 
@@ -94,24 +160,27 @@ class TransactionListProvider extends ChangeNotifier {
       List<DocumentSnapshot> docs;
       
       if (showShared && walletId != null) {
+        print('📚 [DEBUG] Fetching shared expenses for walletId: $walletId, filterUserId: $filterUserId');
         docs = await _fetchSharedExpensesForMonth(month, year, walletId, filterUserId);
       } else {
+        print('📚 [DEBUG] Fetching personal expenses for userId: $userId');
         docs = await _fetchExpensesForMonth(month, year, userId);
       }
 
+      print('📚 [DEBUG] Fetched ${docs.length} documents');
       _permanentCache[cacheKey] = docs;
       _calculateAndCacheTotals(cacheKey, docs);
       
-      print('[CACHE] Loaded ${docs.length} transactions for cache key: $cacheKey');
+      print('📚 [DEBUG] ${forceReload ? 'Force reloaded' : 'Loaded'} ${docs.length} transactions for cache key: $cacheKey');
     } catch (e) {
-      print('[CACHE] Error loading transactions for $cacheKey: $e');
+      print('📚 [DEBUG] Error loading transactions for $cacheKey: $e');
       _permanentCache[cacheKey] = [];
     }
 
     _loadingStates[cacheKey] = false;
+    print('📚 [DEBUG] Loading complete, calling notifyListeners');
     notifyListeners();
   }
-
   // Force refresh a specific cache (used after edits)
   Future<void> refreshCache(String cacheKey) async {
     // Parse cache key to get the parameters
@@ -369,23 +438,44 @@ Future<List<DocumentSnapshot>> _fetchSharedExpensesForMonth(
     notifyListeners();
   }
 
-  void invalidateCacheForMonth(String month, int year) {
-    final keysToRemove = _permanentCache.keys.where((key) {
-      final parts = key.split('-');
-      final cacheMonth = parts[4];
-      final cacheYear = int.tryParse(parts[5]);
-      return cacheMonth == month && cacheYear == year;
-    }).toList();
+
+void debugCacheState() {
+    print('🔍 [DEBUG] === CACHE STATE DEBUG ===');
+    print('🔍 [DEBUG] Total cache keys: ${_permanentCache.length}');
+    print('🔍 [DEBUG] Refresh trigger: $_refreshTrigger');
     
-    for (final key in keysToRemove) {
-      _permanentCache.remove(key);
-      _totalsByUserCache.remove(key);
-      _loadingStates.remove(key);
+    for (var key in _permanentCache.keys) {
+      final itemCount = _permanentCache[key]?.length ?? 0;
+      final isLoading = _loadingStates[key] ?? false;
+      print('🔍 [DEBUG] Cache key: $key');
+      print('🔍 [DEBUG] - Items: $itemCount');
+      print('🔍 [DEBUG] - Loading: $isLoading');
     }
-    
-    print('[CACHE] Invalidated cache for $month $year');
-    notifyListeners();
+    print('🔍 [DEBUG] === END CACHE STATE DEBUG ===');
   }
+
+
+
+void invalidateCacheForMonth(String month, int year) {
+  // convert both numeric and name into the same format:
+  final monthNumber = int.tryParse(month) ?? _monthFromString(month);
+  final targetMonth = monthNumber.toString();
+
+  final keysToRemove = _permanentCache.keys.where((key) {
+    final parts     = key.split('-');
+    final cacheMonth = parts[4];               // e.g. "8"
+    final cacheYear  = int.tryParse(parts[5]);
+    return cacheMonth == targetMonth && cacheYear == year;
+  }).toList();
+
+  for (final k in keysToRemove) {
+    _permanentCache.remove(k);
+    _totalsByUserCache.remove(k);
+    _loadingStates.remove(k);
+  }
+
+  triggerRefresh();
+}
 
   // Compatibility methods for existing stream functionality
   void initializeStream(BuildContext context, String userId, String? walletId, 
