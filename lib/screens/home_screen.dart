@@ -1,23 +1,23 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
+// lib/screens/home_screen.dart (Updated)
+
 import 'package:couple_expenses/providers/month_selection_provider.dart';
 import 'package:couple_expenses/providers/transaction_list_provider.dart';
 import 'package:couple_expenses/providers/wallet_provider.dart';
 import 'package:couple_expenses/screens/month_picker.dart';
-import 'package:couple_expenses/widgets/home_screen_widgets/monthly_transaction_list.dart';
+import 'package:couple_expenses/widgets/home_screen_widgets/expense_view/my_expenses_view.dart';
+import 'package:couple_expenses/widgets/home_screen_widgets/expense_view/shared_expenses_view.dart';
+
 import 'package:couple_expenses/widgets/home_screen_widgets/recording_section.dart';
 import 'package:couple_expenses/widgets/home_screen_widgets/successpop.dart';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:couple_expenses/providers/auth_provider.dart';
 import 'package:couple_expenses/providers/home_screen_provider.dart';
 import 'package:couple_expenses/screens/analytics_screen.dart';
 import 'package:couple_expenses/screens/wallet_screen.dart';
 import 'package:couple_expenses/widgets/home_screen_widgets/search_and_toggle_card.dart';
-import 'package:couple_expenses/widgets/home_screen_widgets/total_spending_card.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_animate/flutter_animate.dart';
-
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -47,7 +47,7 @@ class _HomeScreenContent extends StatefulWidget {
 }
 
 class __HomeScreenContentState extends State<_HomeScreenContent> {
-    bool _didPrefetchNames = false;
+  bool _didPrefetchNames = false;
 
   @override
   void didChangeDependencies() {
@@ -64,6 +64,7 @@ class __HomeScreenContentState extends State<_HomeScreenContent> {
       _didPrefetchNames = true;
     }
   }
+
   @override
   void initState() {
     super.initState();
@@ -78,7 +79,6 @@ class __HomeScreenContentState extends State<_HomeScreenContent> {
   Widget build(BuildContext context) {
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     final userName = authProvider.user?.displayName?.split(' ').first ?? 'there';
-    final walletId = authProvider.walletId;
 
     return Scaffold(
       backgroundColor: Colors.grey.shade200,
@@ -96,14 +96,11 @@ class __HomeScreenContentState extends State<_HomeScreenContent> {
         bottom: const PreferredSize(
           preferredSize: Size.fromHeight(80),
           child: SearchAndToggleCard(),
-          
         ),
-        
       ),
       
       body: Stack(
         children: [
-          
           SingleChildScrollView(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
@@ -112,99 +109,61 @@ class __HomeScreenContentState extends State<_HomeScreenContent> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    TotalSpendingCard(userId: widget.userId),
+                    // Month Picker Button
+                    Consumer<MonthSelectionProvider>(
+                      builder: (context, monthProvider, _) {
+                        final selectedMonth = monthProvider.selectedMonth;
+                        final selectedYear = monthProvider.selectedYear;
+
+                        return Center(
+                          child: ElevatedButton.icon(
+                            onPressed: () {
+                              showDialog(
+                                context: context,
+                                builder: (BuildContext context) {
+                                  return MonthPickerDialog();
+                                },
+                              );
+                            },
+                            icon: Icon(Icons.calendar_month, color: Colors.white),
+                            label: Text(
+                              "$selectedMonth $selectedYear",
+                              style: GoogleFonts.inter(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.white,
+                              ),
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.indigo.shade700,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 24, vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12)),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
                     const SizedBox(height: 16),
+
+                    // Dynamic Content Based on Toggle
                     Selector<AuthProvider, String?>(
                       selector: (_, provider) => provider.walletId,
                       builder: (context, walletId, _) {
                         if (walletId == null) {
-                          return Card(
-                            color: Colors.white,
-                            elevation: 2,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                            child: Padding(
-                              padding: const EdgeInsets.all(16),
-                              child: Column(
-                                children: [
-                                  Text(
-                                    'No Wallet Joined',
-                                    style: GoogleFonts.inter(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.w600,
-                                      color: Colors.red.shade600,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    'Join or create a wallet to share expenses.',
-                                    style: GoogleFonts.inter(
-                                      fontSize: 14,
-                                      color: Colors.grey.shade600,
-                                    ),
-                                    textAlign: TextAlign.center,
-                                  ),
-                                  const SizedBox(height: 12),
-                                  FilledButton(
-                                    onPressed: () {
-                                      Navigator.push(
-                                        context,
-                                        MaterialPageRoute(builder: (_) => const WalletScreen()),
-                                      );
-                                    },
-                                    style: FilledButton.styleFrom(
-                                      backgroundColor: Colors.indigo.shade700,
-                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                                      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
-                                    ),
-                                    child: Text(
-                                      'Join Wallet',
-                                      style: GoogleFonts.inter(
-                                        fontSize: 14,
-                                        fontWeight: FontWeight.w600,
-                                        color: Colors.white,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
+                          return _buildNoWalletCard(context);
                         }
-                        return Column(
-                          children: [
-                            Consumer<MonthSelectionProvider>(
-                              builder: (context, monthProvider, _) {
-                                final selectedMonth = monthProvider.selectedMonth;
-                                final selectedYear = monthProvider.selectedYear;
 
-                                return ElevatedButton(
-                                  onPressed: () {
-                                    showDialog(
-                                      context: context,
-                                      builder: (BuildContext context) {
-                                        return MonthPickerDialog();
-                                      },
-                                    );
-                                  },
-                                  child: Text("$selectedMonth $selectedYear"),
-                                );
-                              },
-                            ),
-                            const SizedBox(height: 16),
-                            Text(
-                              'Recent Expenses',
-                              style: GoogleFonts.inter(
-                                fontSize: 20,
-                                fontWeight: FontWeight.w700,
-                                color: Colors.indigo.shade700,
-                              ),
-                            ),
-                            const SizedBox(height: 6),
-                            MonthlyTransactionList(
-                              userId: widget.userId,
+                        return Consumer<HomeScreenProvider>(
+                          builder: (context, homeProv, _) {
+                            if (homeProv.showWalletReceipts) {
                              
-                            ),
-                          ],
+                              return SharedExpensesView(userId: widget.userId);
+                            } else {
+                              return MyExpensesView(userId: widget.userId);
+                            }
+                          },
                         );
                       },
                     ),
@@ -257,6 +216,7 @@ class __HomeScreenContentState extends State<_HomeScreenContent> {
             IconButton(
               icon: Icon(Icons.logout, color: Colors.indigo.shade700),
               onPressed: () async {
+                final authProvider = Provider.of<AuthProvider>(context, listen: false);
                 await authProvider.signOut();
                 if (mounted) {
                   Navigator.pushReplacementNamed(context, '/login');
@@ -283,6 +243,67 @@ class __HomeScreenContentState extends State<_HomeScreenContent> {
           tooltip: data.isRecording ? 'Stop Recording' : 'Start Recording',
           child: Icon(data.isRecording ? Icons.stop : Icons.mic, size: 28),
         ).animate().scale(duration: const Duration(milliseconds: 200)),
+      ),
+    );
+  }
+
+  Widget _buildNoWalletCard(BuildContext context) {
+    return Card(
+      color: Colors.white,
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            Icon(
+              Icons.account_balance_wallet_outlined,
+              size: 64,
+              color: Colors.indigo.shade300,
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'No Wallet Joined',
+              style: GoogleFonts.inter(
+                fontSize: 20,
+                fontWeight: FontWeight.w600,
+                color: Colors.indigo.shade700,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Join or create a wallet to share expenses with your partner.',
+              style: GoogleFonts.inter(
+                fontSize: 14,
+                color: Colors.grey.shade600,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const WalletScreen()),
+                );
+              },
+              icon: const Icon(Icons.add),
+              label: Text(
+                'Join Wallet',
+                style: GoogleFonts.inter(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white,
+                ),
+              ),
+              style: FilledButton.styleFrom(
+                backgroundColor: Colors.indigo.shade700,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

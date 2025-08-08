@@ -149,19 +149,27 @@ class TransactionListProvider extends ChangeNotifier {
     _loadingStates[cacheKey] = false;
     notifyListeners();
   }
+Future<List<DocumentSnapshot>> fetchSharedSummaryForMonth(
+  String month,
+  int year,
+  String walletId,
+) async {
+  // simply defer to the private method with no filter
+  return _fetchSharedExpensesForMonth(month, year, walletId, null);
+}
 
-  Future<List<DocumentSnapshot>> _fetchSharedExpensesForMonth(
-    String month,
-    int year,
-    String walletId,
-    String? filterUserId,
-  ) async {
-    final monthNumber = _monthFromString(month);
-    final startOfMonth = DateTime.utc(year, monthNumber, 1);
-    final endOfMonth = DateTime.utc(year, monthNumber + 1, 0)
-        .add(const Duration(hours: 23, minutes: 59, seconds: 59));
+Future<List<DocumentSnapshot>> _fetchSharedExpensesForMonth(
+  String month,
+  int year,
+  String walletId,
+  String? filterUserId,   // ← new, nullable parameter
+) async {
+  final monthNumber = _monthFromString(month);
+  final startOfMonth = DateTime.utc(year, monthNumber, 1);
+  final endOfMonth = DateTime.utc(year, monthNumber + 1, 0)
+      .add(const Duration(hours: 23, minutes: 59, seconds: 59));
 
-    Query<Map<String, dynamic>> query = FirebaseFirestore.instance
+  Query<Map<String, dynamic>> query = FirebaseFirestore.instance
       .collection('receipts')
       .where('date_of_purchase',
           isGreaterThanOrEqualTo: Timestamp.fromDate(startOfMonth))
@@ -171,13 +179,14 @@ class TransactionListProvider extends ChangeNotifier {
       .orderBy('date_of_purchase', descending: true)
       .orderBy('created_at', descending: true);
 
-    if (filterUserId != null) {
-      query = query.where('userId', isEqualTo: filterUserId);
-    }
-
-    final snapshot = await query.get();
-    return snapshot.docs;
+  // **Only one** filter block is needed:
+  if (filterUserId != null) {
+    query = query.where('userId', isEqualTo: filterUserId);
   }
+
+  final snapshot = await query.get();
+  return snapshot.docs;
+}
 
   Future<List<DocumentSnapshot>> _fetchExpensesForMonth(
     String month,

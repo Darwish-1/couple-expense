@@ -24,6 +24,7 @@ class TotalSpendingCard extends StatefulWidget {
 class _TotalSpendingCardState extends State<TotalSpendingCard> {
   late NumberFormat _currencyFormatter;
   bool _showPieChart = false;
+  String? _highlightedUserId; // Track which user segment is highlighted
 
   @override
   void initState() {
@@ -44,6 +45,12 @@ class _TotalSpendingCardState extends State<TotalSpendingCard> {
       'september': 9, 'october': 10, 'november': 11, 'december': 12,
     };
     return names[month.toLowerCase()] ?? DateTime.now().month;
+  }
+
+  void _toggleHighlight(String userId) {
+    setState(() {
+      _highlightedUserId = _highlightedUserId == userId ? null : userId;
+    });
   }
 
   @override
@@ -71,10 +78,7 @@ class _TotalSpendingCardState extends State<TotalSpendingCard> {
 
       if (homeProv.showWalletReceipts && walletId != null) {
         query = query.where('walletId', isEqualTo: walletId);
-        if (txnProv.selectedUserFilter != null) {
-          query =
-              query.where('userId', isEqualTo: txnProv.selectedUserFilter);
-        }
+        // Remove the user filter logic since we're handling highlighting locally
       } else {
         query = query.where('userId', isEqualTo: widget.userId);
       }
@@ -96,9 +100,9 @@ class _TotalSpendingCardState extends State<TotalSpendingCard> {
             children: [
               Text(
                 homeProv.showWalletReceipts
-                    ? (txnProv.selectedUserFilter == null
-                        ? 'Shared Spending'
-                        : 'Filtered Spending')
+                    ? (_highlightedUserId != null 
+                        ? (_highlightedUserId == currentUserId ? 'Your Spending' : '${walletProv.partnerName}\'s Spending')
+                        : 'Shared Spending')
                     : 'My Spending',
                 style: GoogleFonts.inter(
                   fontSize: 18,
@@ -106,8 +110,7 @@ class _TotalSpendingCardState extends State<TotalSpendingCard> {
                   color: Colors.indigo.shade700,
                 ),
               ),
-              if (homeProv.showWalletReceipts &&
-                  txnProv.selectedUserFilter == null)
+              if (homeProv.showWalletReceipts)
                 FilterChip(
                   label: Text(
                     _showPieChart ? 'Show Segments' : 'Show Chart',
@@ -156,9 +159,8 @@ class _TotalSpendingCardState extends State<TotalSpendingCard> {
                     d.data() as Map<String, dynamic>);
               }
 
-              // ─── Shared & no filter ───────────────────────────
-              if (homeProv.showWalletReceipts &&
-                  txnProv.selectedUserFilter == null) {
+              // ─── Shared spending view ─────────────────────────
+              if (homeProv.showWalletReceipts) {
                 // 1) compute totals by user
                 final sums = <String, double>{};
                 for (var d in docs) {
@@ -190,22 +192,30 @@ class _TotalSpendingCardState extends State<TotalSpendingCard> {
                               sections: [
                                 PieChartSectionData(
                                   value: youTotal,
-                                  color: Colors.indigo.shade700,
+                                  color: _highlightedUserId == currentUserId 
+                                      ? Colors.indigo.shade900 
+                                      : (_highlightedUserId == null 
+                                          ? Colors.indigo.shade700 
+                                          : Colors.indigo.shade300),
                                   title: 'You',
-                                  radius: 60,
+                                  radius: _highlightedUserId == currentUserId ? 65 : 60,
                                   titleStyle: GoogleFonts.inter(
-                                      fontSize: 12,
+                                      fontSize: _highlightedUserId == currentUserId ? 14 : 12,
                                       color: Colors.white,
                                       fontWeight: FontWeight.w600),
                                 ),
                                 if (partnerTotal > 0)
                                   PieChartSectionData(
                                     value: partnerTotal,
-                                    color: Colors.teal.shade400,
+                                    color: _highlightedUserId == partnerId 
+                                        ? Colors.teal.shade600 
+                                        : (_highlightedUserId == null 
+                                            ? Colors.teal.shade400 
+                                            : Colors.teal.shade200),
                                     title: partnerName,
-                                    radius: 60,
+                                    radius: _highlightedUserId == partnerId ? 65 : 60,
                                     titleStyle: GoogleFonts.inter(
-                                        fontSize: 12,
+                                        fontSize: _highlightedUserId == partnerId ? 14 : 12,
                                         color: Colors.white,
                                         fontWeight: FontWeight.w600),
                                   ),
@@ -225,40 +235,79 @@ class _TotalSpendingCardState extends State<TotalSpendingCard> {
                 // ─ Segmented View ───────────────────────────────
                 return ConstrainedBox(
                   constraints:
-                      const BoxConstraints(minHeight: 100, maxHeight: 150),
-                  child: Row(
+                      const BoxConstraints(minHeight: 100, maxHeight: 180),
+                  child: Column(
                     children: [
-                      Expanded(
-                        child: _buildUserSegment(
-                          context,
-                          label: 'You',
-                          userId: currentUserId,
-                          total: youTotal,
-                          color: Colors.indigo.shade700,
-                          onTap: () => txnProv.setUserFilter(
-                            currentUserId,
-                            context,
-                            authProv.user!.uid,
-                            authProv.walletId,
-                            homeProv.showWalletReceipts,
+                      // Show total for highlighted user if any
+                      if (_highlightedUserId != null) ...[
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          margin: const EdgeInsets.only(bottom: 8),
+                          decoration: BoxDecoration(
+                            color: (_highlightedUserId == currentUserId 
+                                ? Colors.indigo.shade700 
+                                : Colors.teal.shade400).withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: _highlightedUserId == currentUserId 
+                                  ? Colors.indigo.shade700 
+                                  : Colors.teal.shade400,
+                              width: 1,
+                            ),
+                          ),
+                          child: Column(
+                            children: [
+                              Text(
+                                _highlightedUserId == currentUserId ? 'Your Total' : '${walletProv.partnerName}\'s Total',
+                                style: GoogleFonts.inter(
+                                  fontSize: 12,
+                                  color: Colors.grey.shade600,
+                                ),
+                              ),
+                              Text(
+                                _currencyFormatter.format(
+                                  _highlightedUserId == currentUserId ? youTotal : partnerTotal
+                                ),
+                                style: GoogleFonts.inter(
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.w700,
+                                  color: _highlightedUserId == currentUserId 
+                                      ? Colors.indigo.shade700 
+                                      : Colors.teal.shade400,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                      ),
-                      const SizedBox(width: 8),
+                      ],
+                      // User segments
                       Expanded(
-                        child: _buildUserSegment(
-                          context,
-                          label: partnerName,
-                          userId: partnerId,
-                          total: partnerTotal,
-                          color: Colors.teal.shade400,
-                          onTap: () => txnProv.setUserFilter(
-                            partnerId,
-                            context,
-                            authProv.user!.uid,
-                            authProv.walletId,
-                            homeProv.showWalletReceipts,
-                          ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: _buildUserSegment(
+                                context,
+                                label: 'You',
+                                userId: currentUserId,
+                                total: youTotal,
+                                color: Colors.indigo.shade700,
+                                isHighlighted: _highlightedUserId == currentUserId,
+                                onTap: () => _toggleHighlight(currentUserId),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: _buildUserSegment(
+                                context,
+                                label: partnerName,
+                                userId: partnerId,
+                                total: partnerTotal,
+                                color: Colors.teal.shade400,
+                                isHighlighted: _highlightedUserId == partnerId,
+                                onTap: () => _toggleHighlight(partnerId),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ],
@@ -266,7 +315,7 @@ class _TotalSpendingCardState extends State<TotalSpendingCard> {
                 );
               }
 
-              // ─── Personal or Filtered ─────────────────────────
+              // ─── Personal spending ───────────────────────────
               return Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -286,29 +335,6 @@ class _TotalSpendingCardState extends State<TotalSpendingCard> {
                       color: Colors.grey.shade600,
                     ),
                   ),
-                  if (txnProv.selectedUserFilter != null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 12),
-                      child: GestureDetector(
-                        onTap: () => txnProv.setUserFilter(
-                          null,
-                          context,
-                          authProv.user!.uid,
-                          authProv.walletId,
-                          homeProv.showWalletReceipts,
-                        ),
-                        child: Chip(
-                          label: Text(
-                            'Clear Filter',
-                            style: GoogleFonts.inter(
-                                fontSize: 12, color: Colors.white),
-                          ),
-                          backgroundColor: Colors.indigo.shade700,
-                          padding:
-                              const EdgeInsets.symmetric(horizontal: 8),
-                        ),
-                      ),
-                    ),
                 ],
               );
             },
@@ -324,34 +350,66 @@ class _TotalSpendingCardState extends State<TotalSpendingCard> {
     required String userId,
     required double total,
     required Color color,
+    required bool isHighlighted,
     required VoidCallback onTap,
   }) {
+    // Determine colors based on highlight state
+    Color cardColor = Colors.white;
+    Color borderColor = Colors.grey.shade200;
+    double elevation = 1;
+    Color textColor = color;
+    
+    if (isHighlighted) {
+      cardColor = color.withOpacity(0.1);
+      borderColor = color;
+      elevation = 3;
+      textColor = color.withOpacity(0.9);
+    } else if (_highlightedUserId != null && !isHighlighted) {
+      // Dim the non-highlighted segment
+      cardColor = Colors.grey.shade50;
+      textColor = color.withOpacity(0.5);
+    }
+
     return Hero(
       tag: 'segment-$userId',
       child: GestureDetector(
         onTap: onTap,
-        child: Card(
-          color: Colors.white,
-          elevation: 1,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-          child: Padding(
-            padding: const EdgeInsets.all(6),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(label,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          child: Card(
+            color: cardColor,
+            elevation: elevation,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+              side: BorderSide(
+                color: borderColor,
+                width: isHighlighted ? 2 : 1,
+              ),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(6),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    label,
                     style: GoogleFonts.inter(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                        color: color)),
-                const SizedBox(height: 4),
-                Text(_currencyFormatter.format(total),
+                      fontSize: 11,
+                      fontWeight: isHighlighted ? FontWeight.w700 : FontWeight.w600,
+                      color: textColor,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    _currencyFormatter.format(total),
                     style: GoogleFonts.inter(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                        color: color)),
-              ],
+                      fontSize: isHighlighted ? 16 : 14,
+                      fontWeight: FontWeight.w700,
+                      color: textColor,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
