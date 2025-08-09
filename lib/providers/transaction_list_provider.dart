@@ -457,22 +457,24 @@ Future<List<DocumentSnapshot>> _fetchSharedExpensesForMonth(
     notifyListeners();
     print('[CACHE] Removed doc $docId from all caches');
   }
-
-  void invalidateCache({String? specificKey}) {
-    if (specificKey != null) {
-      _permanentCache.remove(specificKey);
-      _totalsByUserCache.remove(specificKey);
-      _loadingStates.remove(specificKey);
-      print('[CACHE] Invalidated specific cache: $specificKey');
-    } else {
-      _permanentCache.clear();
-      _totalsByUserCache.clear();
-      _loadingStates.clear();
-      print('[CACHE] Invalidated all cache');
-    }
-    
-    notifyListeners();
+void invalidateCache({String? specificKey}) {
+  if (specificKey != null) {
+    _permanentCache.remove(specificKey);
+    _totalsByUserCache.remove(specificKey);
+    _loadingStates.remove(specificKey);
+    print('[CACHE] Invalidated specific cache: $specificKey');
+  } else {
+    _permanentCache.clear();
+    _totalsByUserCache.clear();
+    _loadingStates.clear();
+    print('[CACHE] Invalidated all cache');
   }
+  
+  // Increment refresh trigger to notify listening widgets
+  _refreshTrigger++;
+  
+  notifyListeners();
+}
 
 
 void debugCacheState() {

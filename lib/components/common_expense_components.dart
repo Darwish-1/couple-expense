@@ -64,6 +64,7 @@ class CommonTransactionList extends StatefulWidget {
 
 class _CommonTransactionListState extends State<CommonTransactionList> {
  String? _currentCacheKey;
+ List<DocumentSnapshot>? _lastNonEmpty;
 
  @override
  void initState() {
@@ -104,17 +105,24 @@ class _CommonTransactionListState extends State<CommonTransactionList> {
   final transactions = txnProv.getTransactionsForCache(_currentCacheKey!);
   final isLoading = txnProv.isLoadingCache(_currentCacheKey!);
 
-  if (isLoading && transactions.isEmpty) {
-   return const Center(
-  child: Padding(
-   padding: EdgeInsets.all(32.0),
-   child: CircularProgressIndicator(),
-  ),
-   );
+  // Keep showing the last non-empty list during refresh to avoid flicker
+  if (transactions.isNotEmpty) {
+    _lastNonEmpty = transactions;
   }
 
+  if (isLoading && (transactions.isEmpty && (_lastNonEmpty == null || _lastNonEmpty!.isEmpty))) {
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.all(32.0),
+        child: CircularProgressIndicator(),
+      ),
+    );
+  }
+
+  final effectiveList = transactions.isNotEmpty ? transactions : (_lastNonEmpty ?? transactions);
+
   final filteredTransactions = widget.showShared
-  ? transactions
+  ? effectiveList
   : transactions.where((doc) {
     final data = doc.data() as Map<String, dynamic>;
     return data['userId'] == widget.userId;

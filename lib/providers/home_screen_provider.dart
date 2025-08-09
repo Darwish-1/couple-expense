@@ -60,6 +60,14 @@ int _monthFromString(String month) {
   bool get showWalletReceipts => _showWalletReceipts;
   TextEditingController get walletIdController => _walletIdController;
 
+
+
+List<Map<String, dynamic>> _pendingExpenses = [];
+  bool _hasJustAddedExpenses = false;
+  
+   List<Map<String, dynamic>> get pendingExpenses => _pendingExpenses;
+  bool get hasJustAddedExpenses => _hasJustAddedExpenses;
+
   void setIsProcessing(bool value) {
     _isProcessing = value;
     notifyListeners();
@@ -126,132 +134,157 @@ int _monthFromString(String month) {
     notifyListeners();
   }
 
-Future<void> saveMultipleToFirestore(
-  List<Map<String, dynamic>> expenses,
-  BuildContext context,
-) async {
-  print('🎯 [DEBUG] Starting saveMultipleToFirestore with ${expenses.length} expenses');
-  
-  if (expenses.isEmpty) {
-    Provider.of<AuthProvider>(context, listen: false).showError(context);
-    return;
-  }
-
-  final authProvider = Provider.of<AuthProvider>(context, listen: false);
-  final txnProvider = Provider.of<TransactionListProvider>(context, listen: false);
-  final userId = authProvider.user?.uid;
-  final walletId = authProvider.walletId;
-  final now = DateTime.now();
-
-  print('🎯 [DEBUG] userId: $userId, walletId: $walletId');
-
-  // Get the selected month/year
-  final monthProv = Provider.of<MonthSelectionProvider>(context, listen: false);
-  final monthNum = _monthFromString(monthProv.selectedMonth);
-  final year = monthProv.selectedYear;
-
-  print('🎯 [DEBUG] Selected month: ${monthProv.selectedMonth}, year: $year, monthNum: $monthNum');
-
-  final Map<String, Map<String, dynamic>> groupedExpenses = {};
-
-  for (var expense in expenses) {
-    final parsedDate = GptParser.normalizeDate(expense['date_of_purchase']);
-    final category = expense['category'] ?? 'General';
-    final item_name = expense['item_name'];
-    final unit_price = (expense['unit_price'] as num?)?.toDouble();
-
-    if (item_name == null || unit_price == null) {
-      debugPrint('Skipping expense due to missing item_name or unit_price: $expense');
-      continue;
-    }
-
-    // Determine the day-of-month (parsedDate or today)
-    final baseDate = parsedDate ?? now;
-    final day = baseDate.day;
-
-    // Force month/year to selected values
-    final purchaseDate = DateTime(year, monthNum, day);
-
-    // GroupKey uses this forced date
-    final dateKey = DateFormat('yyyy-MM-dd').format(purchaseDate);
-    final groupKey = '$category-$dateKey';
-
-    if (!groupedExpenses.containsKey(groupKey)) {
-      groupedExpenses[groupKey] = {
-        'item_name': [],
-        'unit_price': [],
-        'date_of_purchase': Timestamp.fromDate(purchaseDate),
-        'category': category,
-        'userId': userId,
-        'walletId': walletId,
-        'created_at': Timestamp.fromDate(now),
-      };
-    }
-    (groupedExpenses[groupKey]!['item_name'] as List).add(item_name);
-    (groupedExpenses[groupKey]!['unit_price'] as List).add(unit_price);
-  }
-
-  print('🎯 [DEBUG] Created ${groupedExpenses.length} grouped expenses');
-
-  // Batch write
-  final batch = FirebaseFirestore.instance.batch();
-  String? lastCreatedDocId;
-
-  try {
-    for (var entry in groupedExpenses.values) {
-      final docRef = FirebaseFirestore.instance.collection('receipts').doc();
-      batch.set(docRef, entry);
-      lastCreatedDocId ??= docRef.id;
-      print('🎯 [DEBUG] Added to batch: ${docRef.id}');
-    }
+  Future<void> saveMultipleToFirestore(
+    List<Map<String, dynamic>> expenses,
+    BuildContext context,
+  ) async {
+    print('🎯 [DEBUG] Starting saveMultipleToFirestore with ${expenses.length} expenses');
     
-    print('🎯 [DEBUG] About to commit batch...');
-    await batch.commit();
-    print('🎯 [DEBUG] Batch committed successfully!');
+    if (expenses.isEmpty) {
+      Provider.of<AuthProvider>(context, listen: false).showError(context);
+      return;
+    }
 
-    // After successful commit, just invalidate and trigger refresh
-    if (lastCreatedDocId != null) {
-      print('🎯 [DEBUG] Setting lastAddedId: $lastCreatedDocId');
-      txnProvider.setLastAddedId(lastCreatedDocId);
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    final txnProvider = Provider.of<TransactionListProvider>(context, listen: false);
+    final userId = authProvider.user?.uid;
+    final walletId = authProvider.walletId;
+    final now = DateTime.now();
+
+    print('🎯 [DEBUG] userId: $userId, walletId: $walletId');
+
+    // Get the selected month/year
+    final monthProv = Provider.of<MonthSelectionProvider>(context, listen: false);
+    final monthNum = _monthFromString(monthProv.selectedMonth);
+    final year = monthProv.selectedYear;
+
+    print('🎯 [DEBUG] Selected month: ${monthProv.selectedMonth}, year: $year, monthNum: $monthNum');
+
+    final Map<String, Map<String, dynamic>> groupedExpenses = {};
+
+    for (var expense in expenses) {
+      final parsedDate = GptParser.normalizeDate(expense['date_of_purchase']);
+      final category = expense['category'] ?? 'General';
+      final item_name = expense['item_name'];
+      final unit_price = (expense['unit_price'] as num?)?.toDouble();
+
+      if (item_name == null || unit_price == null) {
+        debugPrint('Skipping expense due to missing item_name or unit_price: $expense');
+        continue;
+      }
+
+      // Determine the day-of-month (parsedDate or today)
+      final baseDate = parsedDate ?? now;
+      final day = baseDate.day;
+
+      // Force month/year to selected values
+      final purchaseDate = DateTime(year, monthNum, day);
+
+      // GroupKey uses this forced date
+      final dateKey = DateFormat('yyyy-MM-dd').format(purchaseDate);
+      final groupKey = '$category-$dateKey';
+
+      if (!groupedExpenses.containsKey(groupKey)) {
+        groupedExpenses[groupKey] = {
+          'item_name': [],
+          'unit_price': [],
+          'date_of_purchase': Timestamp.fromDate(purchaseDate),
+          'category': category,
+          'userId': userId,
+          'walletId': walletId,
+          'created_at': Timestamp.fromDate(now),
+        };
+      }
+      (groupedExpenses[groupKey]!['item_name'] as List).add(item_name);
+      (groupedExpenses[groupKey]!['unit_price'] as List).add(unit_price);
+    }
+
+    print('🎯 [DEBUG] Created ${groupedExpenses.length} grouped expenses');
+
+    // INSTANT UPDATE: Store pending expenses and notify immediately
+    _pendingExpenses = groupedExpenses.values.toList();
+    _hasJustAddedExpenses = true;
+    notifyListeners(); // This will instantly update the UI
+
+    // Batch write
+    final batch = FirebaseFirestore.instance.batch();
+    String? lastCreatedDocId;
+
+    try {
+      for (var entry in groupedExpenses.values) {
+        final docRef = FirebaseFirestore.instance.collection('receipts').doc();
+        batch.set(docRef, entry);
+        lastCreatedDocId ??= docRef.id;
+        print('🎯 [DEBUG] Added to batch: ${docRef.id}');
+      }
       
-      // Get the month name for cache operations
-      final monthName = _getMonthName(monthNum);
-      print('🎯 [DEBUG] About to invalidate cache for month: $monthName, year: $year');
-      
-      // Check current cache state before invalidation
-      final currentCacheKey = _generateCurrentCacheKey(
-        userId!, 
-        _showWalletReceipts, 
-        walletId, 
-        txnProvider.selectedUserFilter, 
-        monthName, 
-        year
-      );
-      print('🎯 [DEBUG] Current cache key: $currentCacheKey');
-      print('🎯 [DEBUG] Cache before invalidation: ${txnProvider.getTransactionsForCache(currentCacheKey).length} items');
-      
-      // This will invalidate cache AND trigger refresh automatically
-      txnProvider.invalidateCacheForMonth(monthName, year);
-      
-      print('🎯 [DEBUG] Cache after invalidation: ${txnProvider.getTransactionsForCache(currentCacheKey).length} items');
-      print('🎯 [DEBUG] Refresh trigger value: ${txnProvider.refreshTrigger}');
-      
-      Future.delayed(const Duration(seconds: 1), () {
-        txnProvider.setLastAddedId(null);
-        print('🎯 [DEBUG] Cleared lastAddedId');
+      print('🎯 [DEBUG] About to commit batch...');
+      await batch.commit();
+      print('🎯 [DEBUG] Batch committed successfully!');
+
+      // After successful commit, clear pending and trigger refresh
+      if (lastCreatedDocId != null) {
+        print('🎯 [DEBUG] Setting lastAddedId: $lastCreatedDocId');
+        txnProvider.setLastAddedId(lastCreatedDocId);
+        
+        // Get the month name for cache operations
+        final monthName = _getMonthName(monthNum);
+        print('🎯 [DEBUG] About to invalidate cache for month: $monthName, year: $year');
+        
+        // This will invalidate cache AND trigger refresh automatically
+        txnProvider.invalidateCacheForMonth(monthName, year);
+        
+        Future.delayed(const Duration(seconds: 1), () {
+          txnProvider.setLastAddedId(null);
+          print('🎯 [DEBUG] Cleared lastAddedId');
+        });
+      }
+
+      // Clear pending expenses after a short delay to let the animation play
+      Future.delayed(const Duration(milliseconds: 1500), () {
+        _pendingExpenses.clear();
+        _hasJustAddedExpenses = false;
+        notifyListeners();
       });
-    }
 
-    showSuccess(groupedExpenses.length);
-    
-    print('🎯 [DEBUG] Successfully completed saveMultipleToFirestore');
-    
-  } catch (e) {
-    print('🎯 [DEBUG] ERROR in saveMultipleToFirestore: $e');
-    Provider.of<AuthProvider>(context, listen: false).showError(context);
-    debugPrint('Save grouped expenses error: $e');
+      showSuccess(groupedExpenses.length);
+      
+      print('🎯 [DEBUG] Successfully completed saveMultipleToFirestore');
+      
+    } catch (e) {
+      // If there's an error, clear the pending expenses
+      _pendingExpenses.clear();
+      _hasJustAddedExpenses = false;
+      notifyListeners();
+      
+      print('🎯 [DEBUG] ERROR in saveMultipleToFirestore: $e');
+      Provider.of<AuthProvider>(context, listen: false).showError(context);
+      debugPrint('Save grouped expenses error: $e');
+    }
   }
-}
+
+  // ADD THIS METHOD
+  double getPendingTotalForUser(String userId) {
+    if (!_hasJustAddedExpenses || _pendingExpenses.isEmpty) return 0.0;
+    
+    double total = 0.0;
+    for (var expense in _pendingExpenses) {
+      if (expense['userId'] == userId) {
+        total += calculateReceiptTotal(expense);
+      }
+    }
+    return total;
+  }
+
+  // ADD THIS METHOD
+  void clearPendingExpenses() {
+    _pendingExpenses.clear();
+    _hasJustAddedExpenses = false;
+    notifyListeners();
+  }
+
+
+  
 String _generateCurrentCacheKey(
   String userId,
   bool showShared,
