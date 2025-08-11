@@ -5,6 +5,7 @@ import 'dart:developer';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:get/get.dart';
+import 'package:shared_preferences/shared_preferences.dart'; // ⬅️ added
 
 import 'package:couple_expenses/controllers/wallet_controller.dart';
 import '../utils/date_utils_ext.dart';
@@ -44,7 +45,7 @@ class ExpensesController extends GetxController {
 
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _walletSub;
 
-  // 🔧 ever(...) returns a Worker, not a StreamSubscription
+  // ever(...) returns a Worker
   Worker? _walletIdWorker;
   Worker? _ownWalletIdWorker;
 
@@ -52,17 +53,27 @@ class ExpensesController extends GetxController {
   void onInit() {
     super.onInit();
 
-    // Watch the WalletController's wallet id so we can bind anchor day
+    // Watch the WalletController's wallet id so we can bind anchor day + load saved period
     if (Get.isRegistered<WalletController>()) {
       final wc = Get.find<WalletController>();
-      _walletIdWorker = ever<String?>(wc.walletId, (_) => _bindAnchorDay());
+      _walletIdWorker = ever<String?>(wc.walletId, (_) {
+        _bindAnchorDay();
+        _loadSelectedPeriod(); // ⬅️ load persisted month/year for this wallet
+      });
     }
 
     // Also watch our own walletId override
-    _ownWalletIdWorker = ever<String?>(walletId, (_) => _bindAnchorDay());
+    _ownWalletIdWorker = ever<String?>(walletId, (_) {
+      _bindAnchorDay();
+      _loadSelectedPeriod();
+    });
 
-    // Initial bind
+    // Persist month/year whenever they change
+    everAll([selectedMonth, selectedYear], (_) => _saveSelectedPeriod());
+
+    // Initial binds
     _bindAnchorDay();
+    _loadSelectedPeriod();
   }
 
   @override
@@ -101,6 +112,48 @@ class ExpensesController extends GetxController {
     });
   }
 
+  /// Persist selected month/year per wallet.
+  Future<void> _saveSelectedPeriod() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final wId = walletId.value ??
+          (Get.isRegistered<WalletController>() ? Get.find<WalletController>().walletId.value : null);
+      final scope = wId ?? 'global';
+
+      final mNum = monthFromString(selectedMonth.value);
+      final y = selectedYear.value;
+
+      await prefs.setInt('exp_period_month_$scope', mNum);
+      await prefs.setInt('exp_period_year_$scope', y);
+      // log('💾 saved period $y-$mNum for $scope');
+    } catch (e) {
+      log('⚠️ failed to save selected period: $e');
+    }
+  }
+
+  /// Load selected month/year per wallet; if nothing saved, keep current values.
+  Future<void> _loadSelectedPeriod() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final wId = walletId.value ??
+          (Get.isRegistered<WalletController>() ? Get.find<WalletController>().walletId.value : null);
+      final scope = wId ?? 'global';
+
+      final m = prefs.getInt('exp_period_month_$scope');
+      final y = prefs.getInt('exp_period_year_$scope');
+
+      if (m != null && m >= 1 && m <= 12) {
+        selectedMonth.value = getMonthName(m);
+      }
+      if (y != null && y > 1900 && y < 3000) {
+        selectedYear.value = y;
+      }
+      // log('📥 loaded period ${selectedYear.value}-${monthFromString(selectedMonth.value)} for $scope');
+    } catch (e) {
+      log('⚠️ failed to load selected period: $e');
+    }
+  }
+
   /// Allow changing the anchor day (e.g., payday = 7 or 27)
   Future<void> setBudgetAnchorDay(int day) async {
     final wId = walletId.value ??
@@ -119,119 +172,124 @@ class ExpensesController extends GetxController {
     lastSuccess.value = 'Start day set to $clamped';
   }
 
- Future<void> saveMultipleExpenses(List<Map<String, dynamic>> expenses) async {
-  log('🎯 [DEBUG] Starting saveMultipleExpenses with ${expenses.length} expenses');
+  Future<void> saveMultipleExpenses(List<Map<String, dynamic>> expenses) async {
+    log('🎯 [DEBUG] Starting saveMultipleExpenses with ${expenses.length} expenses');
 
-  if (expenses.isEmpty) {
-    lastError.value = 'Nothing to save.';
-    return;
-  }
-
-  final user = FirebaseAuth.instance.currentUser;
-  final userId = user?.uid;
-  final wId = walletId.value ??
-      (Get.isRegistered<WalletController>() ? Get.find<WalletController>().walletId.value : null);
-  final now = DateTime.now();
-
-  if (userId == null) {
-    lastError.value = 'User not authenticated.';
-    return;
-  }
-  if (wId == null) {
-    lastError.value = 'No wallet selected.';
-    return;
-  }
-
-  // NOTE: we no longer force month/year to the selected label.
-  // The period filter is handled by the stream queries.
-  final Map<String, Map<String, dynamic>> grouped = {};
-
-  for (final expense in expenses) {
-    final parsedDate = tryParseAnyDate(expense['date_of_purchase'] as String?);
-    final category = (expense['category'] as String?) ?? 'General';
-    final itemName = expense['item_name'] as String?;
-    final unitPrice = (expense['unit_price'] as num?)?.toDouble();
-
-    if (itemName == null || unitPrice == null) {
-      log('Skipping expense due to missing item_name or unit_price: $expense');
-      continue;
+    if (expenses.isEmpty) {
+      lastError.value = 'Nothing to save.';
+      return;
     }
 
-    // Use the actual date (parsed or "now"), without forcing the selected label month.
-    final purchaseDate = parsedDate ?? now;
+    final user = FirebaseAuth.instance.currentUser;
+    final userId = user?.uid;
+    final wId = walletId.value ??
+        (Get.isRegistered<WalletController>() ? Get.find<WalletController>().walletId.value : null);
+    final now = DateTime.now();
 
-    final y = purchaseDate.year.toString().padLeft(4, '0');
-    final m = purchaseDate.month.toString().padLeft(2, '0');
-    final d = purchaseDate.day.toString().padLeft(2, '0');
-    final dateKey = '$y-$m-$d';
-    final groupKey = '$category-$dateKey';
-
-    grouped.putIfAbsent(groupKey, () {
-      return {
-        'item_name': <String>[],
-        'unit_price': <double>[],
-        'date_of_purchase': Timestamp.fromDate(purchaseDate),
-        'category': category,
-        'userId': userId,                       // who added it
-        'created_at': Timestamp.fromDate(now),  // for ordering
-      };
-    });
-
-    (grouped[groupKey]!['item_name'] as List).add(itemName);
-    (grouped[groupKey]!['unit_price'] as List).add(unitPrice);
-  }
-
-  log('🎯 [DEBUG] Created ${grouped.length} grouped expenses');
-
-  // Instant UI: mark as pending
-  pendingExpenses.assignAll(grouped.values.toList());
-  hasJustAddedExpenses.value = true;
-
-  final batch = FirebaseFirestore.instance.batch();
-  String? firstDocId;
-
-  try {
-    final col = FirebaseFirestore.instance
-        .collection('wallets')
-        .doc(wId)
-        .collection('receipts');
-
-    for (final data in grouped.values) {
-      final docRef = col.doc();
-      batch.set(docRef, data);
-      firstDocId ??= docRef.id;
-      log('🎯 [DEBUG] Added to batch: ${docRef.id}');
+    if (userId == null) {
+      lastError.value = 'User not authenticated.';
+      return;
+    }
+    if (wId == null) {
+      lastError.value = 'No wallet selected.';
+      return;
     }
 
-    log('🎯 [DEBUG] About to commit batch...');
-    await batch.commit();
-    log('🎯 [DEBUG] Batch committed successfully!');
+    // We use the parsed date (or "now") as-is; we do NOT force the selected label month.
+    final Map<String, Map<String, dynamic>> grouped = {};
 
-    if (firstDocId != null) {
-      lastAddedId.value = firstDocId;
-      Future.delayed(const Duration(seconds: 1), () {
-        lastAddedId.value = null;
+    for (final expense in expenses) {
+      final parsedDate = tryParseAnyDate(expense['date_of_purchase'] as String?);
+      final category = (expense['category'] as String?) ?? 'General';
+      final itemName = expense['item_name'] as String?;
+      final unitPrice = (expense['unit_price'] as num?)?.toDouble();
+
+      if (itemName == null || unitPrice == null) {
+        log('Skipping expense due to missing item_name or unit_price: $expense');
+        continue;
+      }
+
+      final purchaseDate = parsedDate ?? now;
+
+      final y = purchaseDate.year.toString().padLeft(4, '0');
+      final m = purchaseDate.month.toString().padLeft(2, '0');
+      final d = purchaseDate.day.toString().padLeft(2, '0');
+      final dateKey = '$y-$m-$d';
+      final groupKey = '$category-$dateKey';
+
+      grouped.putIfAbsent(groupKey, () {
+        return {
+          'item_name': <String>[],
+          'unit_price': <double>[],
+          'date_of_purchase': Timestamp.fromDate(purchaseDate),
+          'category': category,
+          'userId': userId, // who added it
+          'created_at': Timestamp.fromDate(now), // for ordering
+        };
       });
+
+      (grouped[groupKey]!['item_name'] as List).add(itemName);
+      (grouped[groupKey]!['unit_price'] as List).add(unitPrice);
     }
 
-    Future.delayed(const Duration(milliseconds: 1500), () {
+    log('🎯 [DEBUG] Created ${grouped.length} grouped expenses');
+
+    // Instant UI: mark as pending
+    pendingExpenses.assignAll(grouped.values.toList());
+    hasJustAddedExpenses.value = true;
+
+    final batch = FirebaseFirestore.instance.batch();
+    String? firstDocId;
+
+    try {
+      final col = FirebaseFirestore.instance
+          .collection('wallets')
+          .doc(wId)
+          .collection('receipts');
+
+      for (final data in grouped.values) {
+        final docRef = col.doc();
+        batch.set(docRef, data);
+        firstDocId ??= docRef.id;
+        log('🎯 [DEBUG] Added to batch: ${docRef.id}');
+      }
+
+      log('🎯 [DEBUG] About to commit batch...');
+      await batch.commit();
+      log('🎯 [DEBUG] Batch committed successfully!');
+
+      if (firstDocId != null) {
+        lastAddedId.value = firstDocId;
+
+        final key =
+            '${selectedMonth.value}-${selectedYear.value}';
+        invalidationCounters[key] = (invalidationCounters[key] ?? 0) + 1;
+
+        Future.delayed(const Duration(seconds: 1), () {
+          lastAddedId.value = null;
+        });
+      }
+
+      Future.delayed(const Duration(milliseconds: 1500), () {
+        pendingExpenses.clear();
+        hasJustAddedExpenses.value = false;
+      });
+
+      lastSuccess.value =
+          'Saved ${grouped.length} grouped entr${grouped.length == 1 ? 'y' : 'ies'}.';
+      lastError.value = '';
+      log('🎯 [DEBUG] Successfully completed saveMultipleExpenses');
+    } catch (e) {
       pendingExpenses.clear();
       hasJustAddedExpenses.value = false;
-    });
+      lastAddedId.value = null;
 
-    lastSuccess.value = 'Saved ${grouped.length} grouped entr${grouped.length == 1 ? 'y' : 'ies'}.';
-    lastError.value = '';
-    log('🎯 [DEBUG] Successfully completed saveMultipleExpenses');
-  } catch (e) {
-    pendingExpenses.clear();
-    hasJustAddedExpenses.value = false;
-    lastAddedId.value = null;
-
-    lastError.value = 'Save failed. $e';
-    lastSuccess.value = '';
-    log('🎯 [DEBUG] ERROR in saveMultipleExpenses: $e');
+      lastError.value = 'Save failed. $e';
+      lastSuccess.value = '';
+      log('🎯 [DEBUG] ERROR in saveMultipleExpenses: $e');
+    }
   }
-}
+
   /// My expenses under /wallets/{wId}/receipts for the selected month (scoped by wallet + anchor day)
   Stream<QuerySnapshot<Map<String, dynamic>>> streamMyMonthInWallet() {
     final uid = FirebaseAuth.instance.currentUser?.uid;
