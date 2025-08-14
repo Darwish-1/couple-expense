@@ -347,7 +347,8 @@ class _WalletScreenState extends State<WalletScreen> {
                     return Card(
                       child: ListTile(
                         title: Text('Wallet: ${inv.walletId}'),
-                        subtitle: Text('From: ${inv.fromUid}  •  Status: ${inv.status}'),
+                    subtitle: Text('From: ${inv.toEmail.isNotEmpty ? inv.toEmail : inv.fromUid}'),
+
                         trailing: pending
                             ? Row(
                                 mainAxisSize: MainAxisSize.min,

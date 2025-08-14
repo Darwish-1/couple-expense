@@ -1,12 +1,12 @@
 // lib/screens/expenses_root_screen.dart
+import 'package:couple_expenses/controllers/auth_controller.dart';
+import 'package:couple_expenses/controllers/wallet_controller.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 
 import 'my_expenses_screen.dart';
 import 'shared_expenses_screen.dart';
 import 'wallet_screen.dart';
-import 'login_screen.dart';
 
 class ExpensesRootScreen extends StatefulWidget {
   const ExpensesRootScreen({super.key});
@@ -17,44 +17,48 @@ class ExpensesRootScreen extends StatefulWidget {
 
 class _ExpensesRootScreenState extends State<ExpensesRootScreen> {
   int _selectedIndex = 0;
-
   late final List<Widget> _tabs;
 
   @override
   void initState() {
     super.initState();
-    // IndexedStack keeps these alive; no extra keep-alive wrapper needed.
+
+    if (!Get.isRegistered<WalletController>()) {
+      Get.put(WalletController(), permanent: true);
+    }
+
     _tabs = [
-      MyExpensesScreen(),
+      const MyExpensesScreen(),
+      // SharedExpensesScreen isn't const because it constructs controllers; keep as before if needed
+      // If your SharedExpensesScreen can't be const, change this line back to: SharedExpensesScreen(),
       SharedExpensesScreen(),
-      WalletScreen(),
-      const SizedBox(), // placeholder for Sign Out
+      const WalletScreen(),
+      const SizedBox(), // Sign Out
     ];
   }
 
-void _onItemTapped(int index) async {
-  if (index == 3) {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Sign Out'),
-        content: const Text('Are you sure you want to sign out?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Sign Out')),
-        ],
-      ),
-    );
-    if (confirm == true) {
-      await FirebaseAuth.instance.signOut();
-      // no navigation; _AuthGate will rebuild to LoginScreen
+  void _onItemTapped(int index) async {
+    if (index == 3) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Sign Out'),
+          content: const Text('Are you sure you want to sign out?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+            ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Sign Out')),
+          ],
+        ),
+      );
+      if (confirm == true) {
+        Get.find<AuthController>().signOut();
+        // AuthGate will rebuild to LoginScreen automatically
+      }
+      return;
     }
-    return;
+
+    setState(() => _selectedIndex = index);
   }
-
-  setState(() => _selectedIndex = index);
-}
-
 
   @override
   Widget build(BuildContext context) {

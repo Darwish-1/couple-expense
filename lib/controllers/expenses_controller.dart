@@ -337,4 +337,83 @@ class ExpensesController extends GetxController {
         .orderBy('date_of_purchase', descending: true)
         .snapshots();
   }
+   Future<void> deleteReceipt(String docId) async {
+    final wId = walletId.value ??
+        (Get.isRegistered<WalletController>() ? Get.find<WalletController>().walletId.value : null);
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (wId == null || uid == null) {
+      lastError.value = 'Not ready to delete.';
+      return;
+    }
+    try {
+      final ref = FirebaseFirestore.instance
+          .collection('wallets')
+          .doc(wId)
+          .collection('receipts')
+          .doc(docId);
+
+      // Defensive: ensure it's mine before deleting (client-side).
+      final snap = await ref.get();
+      if (snap.exists && snap.data()?['userId'] == uid) {
+        await ref.delete();
+        lastSuccess.value = 'Deleted.';
+        // optional: bump cache key to force rebuild
+        final key = '${selectedMonth.value}-${selectedYear.value}';
+        invalidationCounters[key] = (invalidationCounters[key] ?? 0) + 1;
+      } else {
+        lastError.value = 'You can only delete your own receipt.';
+      }
+    } catch (e) {
+      lastError.value = 'Delete failed. $e';
+    }
+  }
+
+  /// Update a receipt (items/prices/category/date). Pass only the fields you changed.
+  Future<void> editReceipt(
+    String docId, {
+    List<String>? items,
+    List<double>? prices,
+    String? category,
+    DateTime? date,
+  }) async {
+    final wId = walletId.value ??
+        (Get.isRegistered<WalletController>() ? Get.find<WalletController>().walletId.value : null);
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (wId == null || uid == null) {
+      lastError.value = 'Not ready to edit.';
+      return;
+    }
+
+    try {
+      final ref = FirebaseFirestore.instance
+          .collection('wallets')
+          .doc(wId)
+          .collection('receipts')
+          .doc(docId);
+
+      // Defensive: verify ownership
+      final snap = await ref.get();
+      if (!snap.exists || snap.data()?['userId'] != uid) {
+        lastError.value = 'You can only edit your own receipt.';
+        return;
+      }
+
+      final update = <String, dynamic>{};
+      if (items != null) update['item_name'] = items;
+      if (prices != null) update['unit_price'] = prices;
+      if (category != null) update['category'] = category;
+      if (date != null) update['date_of_purchase'] = Timestamp.fromDate(date);
+      if (update.isEmpty) return;
+
+      update['updated_at'] = FieldValue.serverTimestamp();
+
+      await ref.update(update);
+      lastSuccess.value = 'Updated.';
+      // optional cache bump
+      final key = '${selectedMonth.value}-${selectedYear.value}';
+      invalidationCounters[key] = (invalidationCounters[key] ?? 0) + 1;
+    } catch (e) {
+      lastError.value = 'Update failed. $e';
+    }
+  }
 }

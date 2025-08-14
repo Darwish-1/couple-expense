@@ -22,6 +22,14 @@
           }
         },
         {
+          "client_id": "522253883024-f74hk9ip9t57q8i7ruilmhaovq45ig42.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.couple_expenses",
+            "certificate_hash": "c93ad916f37fa721c62d58e3b19a6cc78c06b952"
+          }
+        },
+        {
           "client_id": "522253883024-cla8rlb3sonuqnokh2jhvairj3iri49t.apps.googleusercontent.com",
           "client_type": 3
         }
