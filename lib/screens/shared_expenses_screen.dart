@@ -12,7 +12,6 @@ import '../utils/date_utils_ext.dart';
 class SharedExpensesScreen extends StatelessWidget {
   SharedExpensesScreen({super.key});
 
-  final WalletController wc = Get.find<WalletController>();
 
   // Expenses controller for shared view
   final ExpensesController c = (() {
@@ -27,6 +26,8 @@ class SharedExpensesScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+        final WalletController wc = Get.find<WalletController>(); // safe now
+
     // Initialize shared expense summary controller
     if (!Get.isRegistered<ExpenseSummaryController>(tag: 'shared')) {
       Get.put(

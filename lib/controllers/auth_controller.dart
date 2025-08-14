@@ -5,18 +5,21 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
+import 'mic_controller.dart';
 import 'wallet_controller.dart';
+import 'expenses_controller.dart';
+import 'expense_summary_controller.dart';
 
 enum AuthStatus { loading, authenticated, unauthenticated, error }
 
 class AuthController extends GetxController {
   AuthController({
-    this.clientId,        // optional iOS client ID
-    this.serverClientId,  // optional Web client ID (recommended)
+    this.clientId,
+    this.serverClientId,
   });
 
-  final String? clientId;
-  final String? serverClientId;
+  final String? clientId;        // optional iOS client ID
+  final String? serverClientId;  // optional Web client ID (recommended)
 
   final _auth = FirebaseAuth.instance;
   final _db = FirebaseFirestore.instance;
@@ -26,27 +29,51 @@ class AuthController extends GetxController {
   final Rxn<User> user = Rxn<User>();
   final RxString errorMessage = ''.obs;
 
+  bool _gotFirstAuthEvent = false;
+
   @override
   void onInit() {
     super.onInit();
     _initGoogleSignIn();
 
-    // React to Firebase auth state
-    _auth.authStateChanges().listen((u) async {
+    // Seed from cache so we don't flash unauthenticated on cold start
+    final cached = _auth.currentUser;
+    if (cached != null) {
+      user.value = cached;
+      status.value = AuthStatus.authenticated;
+    }
+
+    _auth.userChanges().listen((u) async {
+      _gotFirstAuthEvent = true;
       user.value = u;
+
       if (u == null) {
         status.value = AuthStatus.unauthenticated;
         return;
       }
+
       try {
         await _ensureUserDoc(u);
-      if (!Get.isRegistered<WalletController>()) {
-  Get.put(WalletController(), permanent: true);
-}
+
+        // Ensure wallet controller once authenticated
+        if (!Get.isRegistered<WalletController>()) {
+          Get.put(WalletController(), permanent: true);
+        }
+
         status.value = AuthStatus.authenticated;
       } catch (e) {
         errorMessage.value = 'Initialization failed: $e';
         status.value = AuthStatus.error;
+      }
+    }, onError: (e) {
+      errorMessage.value = 'Auth stream error: $e';
+      status.value = AuthStatus.error;
+    });
+
+    // Keep "loading" until we get first auth event
+    ever<AuthStatus>(status, (s) {
+      if (!_gotFirstAuthEvent && s != AuthStatus.error) {
+        status.value = AuthStatus.loading;
       }
     });
   }
@@ -57,8 +84,7 @@ class AuthController extends GetxController {
         clientId: clientId,
         serverClientId: serverClientId,
       );
-      // IMPORTANT: do NOT call attemptLightweightAuthentication() here.
-      // It may show a chooser automatically and you’re not handling its result.
+      // Do NOT call attemptLightweightAuthentication() here.
     } catch (e) {
       errorMessage.value = 'Failed to initialize Google Sign-In: $e';
       status.value = AuthStatus.error;
@@ -92,7 +118,6 @@ class AuthController extends GetxController {
 
       await _ensureUserDoc(u);
 
-      // Wallet will be ensured by the authStateChanges listener
       status.value = AuthStatus.authenticated;
     } catch (e) {
       errorMessage.value = 'Sign-in failed: $e';
@@ -101,14 +126,55 @@ class AuthController extends GetxController {
     }
   }
 
+  /// Full logout: stop all streams/controllers, then sign out of Firebase & Google.
   Future<void> signOut() async {
     try {
-      await _gsi.disconnect(); // clears local GSI session
+      status.value = AuthStatus.loading;
+
+      // 1) Stop Firestore stream sources BEFORE auth goes null
+      _cleanupAppState();
+
+      // 2) Sign out of Firebase
       await _auth.signOut();
+
+      // 3) Disconnect Google (clears chooser cache)
+      try {
+        await _gsi.disconnect();
+      } catch (_) {}
+
+      // 4) Done – AuthGate will rebuild to Login
       status.value = AuthStatus.unauthenticated;
     } catch (e) {
       errorMessage.value = 'Error signing out: $e';
       status.value = AuthStatus.error;
+    }
+  }
+
+  void _cleanupAppState() {
+    // Expenses
+    if (Get.isRegistered<ExpensesController>(tag: 'my')) {
+      Get.delete<ExpensesController>(tag: 'my', force: true);
+    }
+    if (Get.isRegistered<ExpensesController>(tag: 'shared')) {
+      Get.delete<ExpensesController>(tag: 'shared', force: true);
+    }
+
+    // Summaries
+    if (Get.isRegistered<ExpenseSummaryController>(tag: 'my')) {
+      Get.delete<ExpenseSummaryController>(tag: 'my', force: true);
+    }
+    if (Get.isRegistered<ExpenseSummaryController>(tag: 'shared')) {
+      Get.delete<ExpenseSummaryController>(tag: 'shared', force: true);
+    }
+
+    // Mic (defensive; usually disposed by screen)
+    if (Get.isRegistered<MicController>()) {
+      Get.delete<MicController>(force: true);
+    }
+
+    // Wallet (permanent) – delete to stop its snapshots immediately
+    if (Get.isRegistered<WalletController>()) {
+      Get.delete<WalletController>(force: true);
     }
   }
 

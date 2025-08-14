@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:couple_expenses/controllers/expense_summary_controller.dart';
 import 'package:couple_expenses/widgets/expense_summary_card.dart';
 import 'package:couple_expenses/widgets/expense_widgets.dart';
+import 'package:couple_expenses/widgets/expenses/receipt_actions.dart';
 import 'package:couple_expenses/widgets/home_screen_widgets/recording_section.dart';
 import 'package:couple_expenses/widgets/home_screen_widgets/successpop.dart';
 import 'package:flutter/material.dart';
@@ -44,10 +45,7 @@ class _MyExpensesScreenState extends State<MyExpensesScreen> {
 
     // Expenses controller for "my" tab
     if (!Get.isRegistered<ExpensesController>(tag: 'my')) {
-      c = Get.put(
-        ExpensesController(collectionName: 'receipts'),
-        tag: 'my',
-      );
+      c = Get.put(ExpensesController(collectionName: 'receipts'), tag: 'my');
     } else {
       c = Get.find<ExpensesController>(tag: 'my');
     }
@@ -55,10 +53,7 @@ class _MyExpensesScreenState extends State<MyExpensesScreen> {
     // Expense summary controller for "my" view (personal expenses only)
     if (!Get.isRegistered<ExpenseSummaryController>(tag: 'my')) {
       Get.put(
-        ExpenseSummaryController(
-          expensesTag: 'my',
-          isSharedView: false,
-        ),
+        ExpenseSummaryController(expensesTag: 'my', isSharedView: false),
         tag: 'my',
       );
     }
@@ -81,9 +76,7 @@ class _MyExpensesScreenState extends State<MyExpensesScreen> {
     return Obx(() {
       // Wait until walletId is available before building the StreamBuilder
       if (wc.walletId.value == null || wc.loading.value) {
-        return const Scaffold(
-          body: Center(child: CircularProgressIndicator()),
-        );
+        return const Scaffold(body: Center(child: CircularProgressIndicator()));
       }
 
       return Scaffold(
@@ -102,7 +95,9 @@ class _MyExpensesScreenState extends State<MyExpensesScreen> {
               children: [
                 // Personal expense summary
                 const ExpenseSummaryCard(
-                    summaryTag: 'my', title: 'My Expenses This Period'),
+                  summaryTag: 'my',
+                  title: 'My Expenses This Period',
+                ),
 
                 // Show current rolling window info (optional, helps users understand)
                 Obx(() {
@@ -129,8 +124,10 @@ class _MyExpensesScreenState extends State<MyExpensesScreen> {
                   if (wc.errorMessage.value.isNotEmpty) {
                     return Container(
                       width: double.infinity,
-                      margin:
-                          const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                      margin: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 4,
+                      ),
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
                         color: Colors.red.shade50,
@@ -139,14 +136,19 @@ class _MyExpensesScreenState extends State<MyExpensesScreen> {
                       ),
                       child: Row(
                         children: [
-                          Icon(Icons.error_outline,
-                              color: Colors.red.shade700, size: 20),
+                          Icon(
+                            Icons.error_outline,
+                            color: Colors.red.shade700,
+                            size: 20,
+                          ),
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
                               wc.errorMessage.value,
                               style: TextStyle(
-                                  color: Colors.red.shade700, fontSize: 13),
+                                color: Colors.red.shade700,
+                                fontSize: 13,
+                              ),
                             ),
                           ),
                           IconButton(
@@ -171,15 +173,20 @@ class _MyExpensesScreenState extends State<MyExpensesScreen> {
                           child: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              Icon(Icons.error_outline,
-                                  size: 48, color: Colors.red.shade400),
+                              Icon(
+                                Icons.error_outline,
+                                size: 48,
+                                color: Colors.red.shade400,
+                              ),
                               const SizedBox(height: 16),
                               const Text('Error loading expenses'),
                               const SizedBox(height: 8),
                               Text(
                                 snap.error.toString(),
                                 style: const TextStyle(
-                                    fontSize: 12, color: Colors.grey),
+                                  fontSize: 12,
+                                  color: Colors.grey,
+                                ),
                                 textAlign: TextAlign.center,
                               ),
                               const SizedBox(height: 16),
@@ -205,19 +212,26 @@ class _MyExpensesScreenState extends State<MyExpensesScreen> {
                           child: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              Icon(Icons.receipt_long_outlined,
-                                  size: 64, color: Colors.grey.shade400),
+                              Icon(
+                                Icons.receipt_long_outlined,
+                                size: 64,
+                                color: Colors.grey.shade400,
+                              ),
                               const SizedBox(height: 16),
                               Text(
                                 'No expenses this period',
                                 style: TextStyle(
-                                    fontSize: 18, color: Colors.grey.shade600),
+                                  fontSize: 18,
+                                  color: Colors.grey.shade600,
+                                ),
                               ),
                               const SizedBox(height: 8),
                               Text(
                                 'Use the microphone button to add expenses quickly',
                                 style: TextStyle(
-                                    fontSize: 14, color: Colors.grey.shade500),
+                                  fontSize: 14,
+                                  color: Colors.grey.shade500,
+                                ),
                                 textAlign: TextAlign.center,
                               ),
                             ],
@@ -230,71 +244,121 @@ class _MyExpensesScreenState extends State<MyExpensesScreen> {
                         separatorBuilder: (_, __) => const Divider(height: 1),
                         itemBuilder: (_, i) {
                           final d = docs[i].data();
-                          final items = (d['item_name'] as List?)?.cast<String>() ??
+                          final items =
+                              (d['item_name'] as List?)?.cast<String>() ??
                               <String>[];
                           final prices =
-                              (d['unit_price'] as List?)?.cast<num>() ?? <num>[];
+                              (d['unit_price'] as List?)?.cast<num>() ??
+                              <num>[];
                           final category = d['category'] ?? '';
-                          final date =
-                              (d['date_of_purchase'] as Timestamp?)?.toDate();
+                          final date = (d['date_of_purchase'] as Timestamp?)
+                              ?.toDate();
                           final total = prices.fold<double>(
-                              0, (p, e) => p + e.toDouble());
+                            0,
+                            (p, e) => p + e.toDouble(),
+                          );
+                          final docId = docs[i].id;
 
-                          return ListTile(
-                            leading: CircleAvatar(
-                              backgroundColor:
-                                  _getCategoryColor(category).withOpacity(0.2),
-                              child: Icon(
-                                _getCategoryIcon(category),
-                                color: _getCategoryColor(category),
-                                size: 20,
+                          return Dismissible(
+                            key: ValueKey(docId),
+    direction: DismissDirection.endToStart,
+    background: Container(
+      alignment: Alignment.centerRight,
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      color: Colors.red.shade100,
+      child: const Icon(Icons.delete, color: Colors.red),
+    ),confirmDismiss: (_) async {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Delete receipt?'),
+          content: const Text('This will permanently remove the selected receipt.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+            ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete')),
+          ],
+        ),
+      );
+      if (ok == true) {
+        await c.deleteReceipt(docId); // using your controller
+      }
+      return false; // false so ListView doesn't try to animate remove; stream will rebuild
+    },
+                            child: ListTile(
+                              leading: CircleAvatar(
+                                backgroundColor: _getCategoryColor(
+                                  category,
+                                ).withOpacity(0.2),
+                                child: Icon(
+                                  _getCategoryIcon(category),
+                                  color: _getCategoryColor(category),
+                                  size: 20,
+                                ),
                               ),
-                            ),
-                            title: Text(
-                              category.isEmpty ? 'General' : category,
-                              style:
-                                  const TextStyle(fontWeight: FontWeight.w600),
-                            ),
-                            subtitle: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                if (date != null)
-                                  Text(
-                                    _formatDate(date),
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.grey.shade600,
-                                    ),
-                                  ),
-                                Text(
-                                  items.join(', '),
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
+                              title: Text(
+                                category.isEmpty ? 'General' : category,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w600,
                                 ),
-                              ],
-                            ),
-                            trailing: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              crossAxisAlignment: CrossAxisAlignment.end,
-                              children: [
-                                Text(
-                                  '₺${total.toStringAsFixed(2)}',
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 16,
-                                  ),
-                                ),
-                                if (items.length > 1)
-                                  Text(
-                                    '${items.length} items',
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      color: Colors.grey.shade600,
+                              ),
+                              subtitle: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  if (date != null)
+                                    Text(
+                                      _formatDate(date),
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.grey.shade600,
+                                      ),
                                     ),
+                                  Text(
+                                    items.join(', '),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
                                   ),
-                              ],
+                                ],
+                              ),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    crossAxisAlignment: CrossAxisAlignment.end,
+                                    children: [
+                                      Text(
+                                        '₺${total.toStringAsFixed(2)}',
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 16,
+                                        ),
+                                      ),
+                                      if (items.length > 1)
+                                        Text(
+                                          '${items.length} items',
+                                          style: TextStyle(
+                                            fontSize: 10,
+                                            color: Colors.grey.shade600,
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                  const SizedBox(width: 4),
+                                  ReceiptActionsMenu(
+                                    docId: docId,
+                                    items: items,
+                                    prices: prices,
+                                    category: category is String
+                                        ? category
+                                        : (category?.toString() ?? 'General'),
+                                    date: date,
+                                    controllerTag: 'my',
+                                  ),
+                                ],
+                              ),
+                            
+                              isThreeLine: date != null,
                             ),
-                            isThreeLine: date != null,
                           );
                         },
                       );
@@ -320,13 +384,7 @@ class _MyExpensesScreenState extends State<MyExpensesScreen> {
             ),
 
             // Mic recording/processing overlay
-            Obx(() {
-              final rec = mic.isRecording.value;
-              final proc = mic.isProcessing.value;
-              if (!rec && !proc) return const SizedBox.shrink();
-              return MicRecordingIndicator(
-                  isRecording: rec, isProcessing: proc);
-            }),
+            const RecordingSection(),
 
             // Success popup overlay
             Obx(

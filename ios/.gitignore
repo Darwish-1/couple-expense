@@ -26,7 +26,9 @@ Flutter/flutter_assets/
 Flutter/flutter_export_environment.sh
 ServiceDefinitions.json
 Runner/GeneratedPluginRegistrant.*
-
+# Ignore ProGuard / R8 rules files
+**/release-rules.pro
+**/proguard-rules.pro
 # Exceptions to above rules.
 !default.mode1v3
 !default.mode2v3

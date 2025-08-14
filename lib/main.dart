@@ -1,20 +1,22 @@
-// lib/main.dart (only the additions/changes shown)
-import 'package:couple_expenses/controllers/wallet_controller.dart';
-import 'package:couple_expenses/screens/expenses_root_screen.dart';
+// lib/main.dart
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
-import 'screens/login_screen.dart';
-import 'screens/my_expenses_screen.dart';
-import 'screens/shared_expenses_screen.dart';
+import 'firebase_options.dart'; // <-- use your generated options
 import 'controllers/auth_controller.dart';
+import 'screens/login_screen.dart';
+import 'screens/expenses_root_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
+
+  // IMPORTANT: initialize with generated options so release builds use the right project
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
 
   try {
     await dotenv.load(fileName: ".env");
@@ -22,7 +24,7 @@ Future<void> main() async {
     debugPrint('dotenv not loaded: $e');
   }
 
-  // 👇 Register AuthController with your client IDs (optional)
+  // Register AuthController (permanent)
   Get.put(
     AuthController(
       clientId: dotenv.maybeGet('GSI_CLIENT_ID'),
@@ -30,7 +32,7 @@ Future<void> main() async {
     ),
     permanent: true,
   );
-Get.put(WalletController(), permanent: true);
+  debugPrint('Cold start: currentUser = ${FirebaseAuth.instance.currentUser?.uid}');
 
   runApp(const MyApp());
 }
@@ -57,33 +59,31 @@ class MyApp extends StatelessWidget {
           ),
         ),
       ),
-      home: const _AuthGate(),
-      getPages: [
-        GetPage(name: '/login', page: () => const LoginScreen()),
-        GetPage(name: '/expenses', page: () => MyExpensesScreen()),
-        GetPage(name: '/shared', page: () => SharedExpensesScreen()),
-      ],
+      home: const AuthGate(),
     );
   }
 }
 
-class _AuthGate extends StatelessWidget {
-  const _AuthGate();
+/// AuthGate that waits until Firebase finishes restoring the session for this process.
+class AuthGate extends StatelessWidget {
+  const AuthGate({super.key});
 
   @override
   Widget build(BuildContext context) {
-    // Using FirebaseAuth stream is fine; AuthController listens too.
     return StreamBuilder<User?>(
+      // authStateChanges() is ideal for “signed in/out” decisions and avoids early nulls
       stream: FirebaseAuth.instance.authStateChanges(),
       builder: (context, snap) {
+        // While Firebase is restoring the user, keep the splash/loader
         if (snap.connectionState == ConnectionState.waiting) {
           return const Scaffold(body: Center(child: CircularProgressIndicator()));
         }
-        final user = snap.data;
+
+        final user = snap.data; // will be non-null if a cached session exists
         if (user == null) {
           return const LoginScreen();
         }
-        return ExpensesRootScreen();
+        return const ExpensesRootScreen();
       },
     );
   }

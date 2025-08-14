@@ -2,7 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import '../controllers/auth_controller.dart';
-import 'package:font_awesome_flutter/font_awesome_flutter.dart'; // Add this dependency to your pubspec.yaml
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
 class LoginScreen extends StatelessWidget {
   const LoginScreen({super.key});
@@ -12,12 +12,12 @@ class LoginScreen extends StatelessWidget {
     final auth = Get.find<AuthController>();
 
     return Obx(() {
-      // Show a loading indicator while the auth controller is initializing or signing in
+      // Keep a loader until the controller has processed the first auth event.
       if (auth.status.value == AuthStatus.loading) {
         return const Scaffold(body: Center(child: CircularProgressIndicator()));
       }
 
-      // If already authenticated, the auth gate will route to the home screen
+      // If already authenticated, the auth gate will route to the home screen.
       if (auth.status.value == AuthStatus.authenticated) {
         return const Scaffold(body: Center(child: CircularProgressIndicator()));
       }
@@ -45,7 +45,6 @@ class LoginScreen extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     const SizedBox(height: 50),
-                    // App Logo or Icon
                     Center(
                       child: Container(
                         padding: const EdgeInsets.all(20),
@@ -61,24 +60,22 @@ class LoginScreen extends StatelessWidget {
                           ],
                         ),
                         child: const Icon(
-                          Icons.account_balance_wallet, // Wallet icon for expense tracker
+                          Icons.account_balance_wallet,
                           size: 80,
-                          color: Color(0xFF0277BD), // Dark Blue
+                          color: Color(0xFF0277BD),
                         ),
                       ),
                     ),
                     const SizedBox(height: 40),
-                    // Welcome Text
                     Text(
                       'Welcome to\nYour Expense Tracker',
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                         fontWeight: FontWeight.bold,
-                        color: const Color(0xFF01579B), // Even darker blue for contrast
+                        color: const Color(0xFF01579B),
                       ),
                     ),
                     const SizedBox(height: 20),
-                    // Subtitle or tagline
                     Text(
                       'Manage your finances with ease.',
                       textAlign: TextAlign.center,
@@ -87,7 +84,6 @@ class LoginScreen extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 40),
-                    // Error Message
                     if (hasError)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 24.0),
@@ -100,7 +96,6 @@ class LoginScreen extends StatelessWidget {
                           ),
                         ),
                       ),
-                    // Google Sign-In Button
                     ElevatedButton.icon(
                       icon: const FaIcon(FontAwesomeIcons.google, color: Colors.white),
                       label: const Text(
@@ -113,7 +108,7 @@ class LoginScreen extends StatelessWidget {
                               await auth.signInWithGoogle();
                             },
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF4285F4), // Google's brand color
+                        backgroundColor: const Color(0xFF4285F4),
                         foregroundColor: Colors.white,
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(12),

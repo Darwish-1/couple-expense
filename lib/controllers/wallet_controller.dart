@@ -299,7 +299,8 @@ Future<void> _refreshMembers() async {
       final email = me?.email ?? '';
       final name = (me?.displayName?.trim().isNotEmpty == true)
           ? me!.displayName!
-          : (email.isNotEmpty ? StringCaps (email.split('@').first).capFirst : 'Me');
+          : (email.isNotEmpty ? email.split('@').first.capFirst
+ : 'Me');
       members.add(WalletMember(uid: uidStr, email: email, name: name));
     } else {
       // Other users - read from wallet's memberDetails
@@ -310,7 +311,8 @@ Future<void> _refreshMembers() async {
         final displayName = name.isNotEmpty 
             ? name 
             : (email.isNotEmpty 
-                ? StringCaps (email.split('@').first).capFirst 
+                ? email.split('@').first.capFirst
+ 
                 : 'Member');
         members.add(WalletMember(uid: uidStr, email: email, name: displayName));
       } else {
