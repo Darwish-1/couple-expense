@@ -1,5 +1,4 @@
 // lib/screens/expenses_root_screen.dart
-import 'package:couple_expenses/controllers/auth_controller.dart';
 import 'package:couple_expenses/controllers/wallet_controller.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
@@ -18,6 +17,7 @@ class ExpensesRootScreen extends StatefulWidget {
 class _ExpensesRootScreenState extends State<ExpensesRootScreen> {
   int _selectedIndex = 0;
   late final List<Widget> _tabs;
+  static const kBackgroundColor = Color.fromRGBO(250, 247, 240, 1);
 
   @override
   void initState() {
@@ -29,53 +29,35 @@ class _ExpensesRootScreenState extends State<ExpensesRootScreen> {
 
     _tabs = [
       const MyExpensesScreen(),
-      // SharedExpensesScreen isn't const because it constructs controllers; keep as before if needed
-      // If your SharedExpensesScreen can't be const, change this line back to: SharedExpensesScreen(),
       SharedExpensesScreen(),
       const WalletScreen(),
-      const SizedBox(), // Sign Out
     ];
   }
 
-  void _onItemTapped(int index) async {
-    if (index == 3) {
-      final confirm = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Sign Out'),
-          content: const Text('Are you sure you want to sign out?'),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-            ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Sign Out')),
-          ],
-        ),
-      );
-      if (confirm == true) {
-        Get.find<AuthController>().signOut();
-        // AuthGate will rebuild to LoginScreen automatically
-      }
-      return;
-    }
-
+  void _onItemTapped(int index) {
     setState(() => _selectedIndex = index);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: kBackgroundColor,
       body: IndexedStack(
         index: _selectedIndex,
         children: _tabs,
       ),
       bottomNavigationBar: BottomNavigationBar(
+        backgroundColor: kBackgroundColor, // cream background
         type: BottomNavigationBarType.fixed,
         currentIndex: _selectedIndex,
+        selectedItemColor: Colors.black87, // active tab color
+        unselectedItemColor: Colors.black54, // inactive tab color
         onTap: _onItemTapped,
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.list), label: 'My'),
           BottomNavigationBarItem(icon: Icon(Icons.people), label: 'Shared'),
-          BottomNavigationBarItem(icon: Icon(Icons.account_balance_wallet), label: 'Wallet'),
-          BottomNavigationBarItem(icon: Icon(Icons.logout), label: 'Sign Out'),
+          BottomNavigationBarItem(
+              icon: Icon(Icons.account_balance_wallet), label: 'Wallet'),
         ],
       ),
     );

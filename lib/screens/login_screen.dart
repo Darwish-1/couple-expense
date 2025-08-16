@@ -1,7 +1,9 @@
 // lib/screens/login_screen.dart
+import 'package:couple_expenses/screens/auth_gate.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import '../controllers/auth_controller.dart';
+import 'expenses_root_screen.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 
 class LoginScreen extends StatelessWidget {
@@ -12,26 +14,28 @@ class LoginScreen extends StatelessWidget {
     final auth = Get.find<AuthController>();
 
     return Obx(() {
-      // Keep a loader until the controller has processed the first auth event.
+      // If authenticated, redirect to the app root right away
+      if (auth.status.value == AuthStatus.authenticated) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          // Send the user to the main app once
+          Get.offAll(() => const AuthGate());
+        });
+        return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      }
+
+      // Show loading while auth flow is in progress
       if (auth.status.value == AuthStatus.loading) {
         return const Scaffold(body: Center(child: CircularProgressIndicator()));
       }
 
-      // If already authenticated, the auth gate will route to the home screen.
-      if (auth.status.value == AuthStatus.authenticated) {
-        return const Scaffold(body: Center(child: CircularProgressIndicator()));
-      }
-
-      final hasError = auth.status.value == AuthStatus.error && auth.errorMessage.isNotEmpty;
+      final hasError =
+          auth.status.value == AuthStatus.error && auth.errorMessage.isNotEmpty;
 
       return Scaffold(
         body: Container(
           decoration: const BoxDecoration(
             gradient: LinearGradient(
-              colors: [
-                Color(0xFFE0F7FA), // Light Cyan
-                Color(0xFFB3E5FC), // Light Blue
-              ],
+              colors: [Color(0xFFE0F7FA), Color(0xFFB3E5FC)],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
             ),
@@ -71,17 +75,17 @@ class LoginScreen extends StatelessWidget {
                       'Welcome to\nYour Expense Tracker',
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                        color: const Color(0xFF01579B),
-                      ),
+                            fontWeight: FontWeight.bold,
+                            color: const Color(0xFF01579B),
+                          ),
                     ),
                     const SizedBox(height: 20),
                     Text(
                       'Manage your finances with ease.',
                       textAlign: TextAlign.center,
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        color: const Color(0xFF0277BD),
-                      ),
+                            color: const Color(0xFF0277BD),
+                          ),
                     ),
                     const SizedBox(height: 40),
                     if (hasError)
@@ -91,9 +95,9 @@ class LoginScreen extends StatelessWidget {
                           auth.errorMessage.value,
                           textAlign: TextAlign.center,
                           style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: Colors.redAccent,
-                            fontWeight: FontWeight.bold,
-                          ),
+                                color: Colors.redAccent,
+                                fontWeight: FontWeight.bold,
+                              ),
                         ),
                       ),
                     ElevatedButton.icon(
