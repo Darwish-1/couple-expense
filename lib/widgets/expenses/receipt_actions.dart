@@ -5,8 +5,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'edit_receipt_sheet.dart';
 import '../../controllers/expenses_controller.dart';
 
-/// Popup menu (⋮) that offers Edit / Delete for a receipt.
-/// By default, uses the 'my' ExpensesController tag.
 class ReceiptActionsMenu extends StatelessWidget {
   const ReceiptActionsMenu({
     super.key,
@@ -24,6 +22,8 @@ class ReceiptActionsMenu extends StatelessWidget {
   final String category;
   final DateTime? date;
   final String controllerTag;
+
+  static const kBackgroundColor = Color.fromRGBO(250, 247, 240, 1);
 
   @override
   Widget build(BuildContext context) {
@@ -53,14 +53,17 @@ class ReceiptActionsMenu extends StatelessWidget {
         builder: (ctx) => AlertDialog(
           title: const Text('Delete receipt?'),
           content: const Text(
-              'This will permanently remove the selected receipt.'),
+            'This will permanently remove the selected receipt.',
+          ),
           actions: [
             TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('Cancel')),
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
             ElevatedButton(
-                onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('Delete')),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Delete'),
+            ),
           ],
         ),
       );
@@ -71,6 +74,7 @@ class ReceiptActionsMenu extends StatelessWidget {
 
     return PopupMenuButton<String>(
       tooltip: 'More',
+      color: kBackgroundColor, // ✅ Set menu background color
       onSelected: (value) async {
         if (value == 'edit') {
           await _edit();

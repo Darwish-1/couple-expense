@@ -64,7 +64,8 @@ class _WalletScreenState extends State<WalletScreen> {
                       if (wc.errorMessage.value.isEmpty && mounted) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
-                              content: Text('Left wallet and kept your expenses.')),
+                            content: Text('Left wallet and kept your expenses.'),
+                          ),
                         );
                       }
                     },
@@ -180,23 +181,12 @@ class _WalletScreenState extends State<WalletScreen> {
   @override
   Widget build(BuildContext context) {
     final myUid = FirebaseAuth.instance.currentUser?.uid;
+    final cs = Theme.of(context).colorScheme;
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Wallet'),
-        actions: [
-          Obx(() {
-            final isMember = wc.isMember.value;
-            final isBusy = wc.loading.value || wc.joining.value;
-            return IconButton(
-              tooltip: 'Leave wallet',
-              onPressed: (!isMember || isBusy)
-                  ? null
-                  : () => _confirmLeaveDialog(context),
-              icon: const Icon(Icons.logout),
-            );
-          }),
-        ],
+        // Leave button removed from AppBar
       ),
       body: Obx(() {
         final loading = wc.loading.value;
@@ -211,54 +201,77 @@ class _WalletScreenState extends State<WalletScreen> {
               padding: const EdgeInsets.all(16),
               children: [
                 // Wallet id & partner
-                Row(
-                  children: [
-                    const Icon(Icons.account_balance_wallet),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'Wallet: ${wc.walletId.value ?? '—'}',
-                        style: const TextStyle(fontWeight: FontWeight.w600),
-                      ),
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.account_balance_wallet),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Wallet: ${wc.walletId.value ?? '—'}',
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Copy wallet ID',
+                          onPressed: wc.walletId.value == null
+                              ? null
+                              : () {
+                                  final id = wc.walletId.value!;
+                                  Clipboard.setData(ClipboardData(text: id));
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text('Copied: $id')),
+                                  );
+                                },
+                          icon: const Icon(Icons.copy),
+                        ),
+                      ],
                     ),
-                    IconButton(
-                      tooltip: 'Copy wallet ID',
-                      onPressed: wc.walletId.value == null
-                          ? null
-                          : () {
-                              final id = wc.walletId.value!;
-                              Clipboard.setData(ClipboardData(text: id));
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(content: Text('Copied: $id')),
-                              );
-                            },
-                      icon: const Icon(Icons.copy),
-                    ),
-                  ],
+                  ),
                 ),
                 const SizedBox(height: 8),
                 if ((wc.partnerName.value).isNotEmpty)
-                  Text('Partner: ${wc.partnerName.value}'),
+                  Padding(
+                    padding:
+                        const EdgeInsets.only(left: 4.0, right: 4.0, bottom: 8),
+                    child: Text(
+                      'Partner: ${wc.partnerName.value}',
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                  ),
 
-                const SizedBox(height: 12),
-                if (joining)
-                  const Card(
-                    color: Color(0xFFFFF8E1),
+                if (joining) ...[
+                  const SizedBox(height: 12),
+                  Card(
                     child: Padding(
-                      padding: EdgeInsets.all(12.0),
-                      child: Text(
-                        'Switching wallets… hold on a sec.',
-                        style: TextStyle(fontSize: 13),
+                      padding: const EdgeInsets.all(12.0),
+                      child: Row(
+                        children: [
+                          Icon(Icons.hourglass_top, color: cs.primary),
+                          const SizedBox(width: 10),
+                          const Expanded(
+                            child: Text(
+                              'Switching wallets… hold on a sec.',
+                              style: TextStyle(fontSize: 13),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
+                ],
 
                 const SizedBox(height: 24),
 
                 // Invite by email (member-only)
-                const Text(
+                Text(
                   'Invite by email',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleMedium
+                      ?.copyWith(fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 8),
                 Row(
@@ -299,9 +312,12 @@ class _WalletScreenState extends State<WalletScreen> {
                 const SizedBox(height: 24),
 
                 // Join by wallet ID (manual)
-                const Text(
+                Text(
                   'Join by wallet ID',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleMedium
+                      ?.copyWith(fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 8),
                 Row(
@@ -331,35 +347,38 @@ class _WalletScreenState extends State<WalletScreen> {
                   ],
                 ),
 
-                const SizedBox(height: 24),
-
-                // Incoming invites
-                const Text(
-                  'Invitations for me',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 8),
-                if (wc.incomingInvites.isEmpty)
-                  const Text('No pending invites.')
-                else
+                // Incoming invites — only show if any
+                if (wc.incomingInvites.isNotEmpty) ...[
+                  const SizedBox(height: 24),
+                  Text(
+                    'Invitations for me',
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 8),
                   ...wc.incomingInvites.map((inv) {
                     final pending = inv.status == 'pending';
                     return Card(
                       child: ListTile(
                         title: Text('Wallet: ${inv.walletId}'),
-                    subtitle: Text('From: ${inv.toEmail.isNotEmpty ? inv.toEmail : inv.fromUid}'),
-
+                        subtitle: Text(
+                          'From: ${inv.toEmail.isNotEmpty ? inv.toEmail : inv.fromUid}',
+                        ),
                         trailing: pending
                             ? Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   TextButton(
-                                    onPressed: isBusy ? null : () => wc.rejectInvite(inv),
+                                    onPressed: (wc.loading.value || wc.joining.value)
+                                        ? null
+                                        : () => wc.rejectInvite(inv),
                                     child: const Text('Reject'),
                                   ),
                                   const SizedBox(width: 8),
                                   ElevatedButton(
-                                    onPressed: isBusy
+                                    onPressed: (wc.loading.value || wc.joining.value)
                                         ? null
                                         : () => _confirmAcceptInvite(
                                               context,
@@ -373,18 +392,19 @@ class _WalletScreenState extends State<WalletScreen> {
                       ),
                     );
                   }),
+                ],
 
-                const SizedBox(height: 24),
-
-                // Outgoing invites
-                const Text(
-                  'Invitations I sent',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 8),
-                if (wc.outgoingInvites.isEmpty)
-                  const Text('No invites sent.')
-                else
+                // Outgoing invites — only show if any
+                if (wc.outgoingInvites.isNotEmpty) ...[
+                  const SizedBox(height: 24),
+                  Text(
+                    'Invitations I sent',
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 8),
                   ...wc.outgoingInvites.map((inv) {
                     return Card(
                       child: ListTile(
@@ -393,13 +413,17 @@ class _WalletScreenState extends State<WalletScreen> {
                       ),
                     );
                   }),
+                ],
 
                 const SizedBox(height: 24),
 
-                // Members (with remove button)
-                const Text(
+                // Members
+                Text(
                   'Members',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleMedium
+                      ?.copyWith(fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 8),
                 if (wc.members.isEmpty)
@@ -407,12 +431,13 @@ class _WalletScreenState extends State<WalletScreen> {
                 else
                   ...wc.members.map(
                     (m) {
-                      final canRemoveThis =
-                          wc.isMember.value &&
+                      final canRemoveThis = wc.isMember.value &&
                           !isBusy &&
                           myUid != null &&
-                          m.uid != myUid; // never show for yourself
-                      final label = (m.name.isNotEmpty ? m.name : (m.email.isNotEmpty ? m.email : m.uid));
+                          m.uid != myUid;
+                      final label = (m.name.isNotEmpty
+                          ? m.name
+                          : (m.email.isNotEmpty ? m.email : m.uid));
 
                       return Card(
                         child: ListTile(
@@ -434,16 +459,78 @@ class _WalletScreenState extends State<WalletScreen> {
                       );
                     },
                   ),
+
+                const SizedBox(height: 32),
+
+                // DANGER ZONE: Leave wallet (moved from AppBar to body)
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(Icons.warning_amber_rounded,
+                                color: Colors.red.shade700),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Danger zone',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleMedium
+                                  ?.copyWith(
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.red.shade700,
+                                  ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Leaving the wallet will remove your access. '
+                          'You can choose whether to keep your existing expenses.',
+                          style: Theme.of(context).textTheme.bodyMedium,
+                        ),
+                        const SizedBox(height: 12),
+                        Obx(() {
+                          final isBusy = wc.loading.value || wc.joining.value;
+                          final isMember = wc.isMember.value;
+                          return Align(
+                            alignment: Alignment.centerLeft,
+                            child: OutlinedButton.icon(
+                              icon: const Icon(Icons.logout),
+                              label: const Text('Leave wallet'),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: Colors.red.shade700,
+                                side: BorderSide(color: Colors.red.shade300),
+                              ),
+                              onPressed: (!isMember || isBusy)
+                                  ? null
+                                  : () => _confirmLeaveDialog(context),
+                            ),
+                          );
+                        }),
+                      ],
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 24),
               ],
             ),
 
             if (isBusy)
-              const Positioned.fill(
+              Positioned.fill(
                 child: ColoredBox(
-                  color: Color.fromARGB(80, 255, 255, 255),
-                  child: Center(child: CircularProgressIndicator()),
+                  color: Theme.of(context)
+                      .colorScheme
+                      .surface
+                      .withOpacity(0.6),
+                  child: const Center(child: CircularProgressIndicator()),
                 ),
               ),
+
             if (err.isNotEmpty)
               Positioned(
                 left: 16,
@@ -454,7 +541,10 @@ class _WalletScreenState extends State<WalletScreen> {
                   borderRadius: BorderRadius.circular(8),
                   child: Padding(
                     padding: const EdgeInsets.all(12.0),
-                    child: Text(err, style: TextStyle(color: Colors.red.shade800)),
+                    child: Text(
+                      err,
+                      style: TextStyle(color: Colors.red.shade800),
+                    ),
                   ),
                 ),
               ),

@@ -5,7 +5,7 @@ import 'dart:developer';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:get/get.dart';
-import 'package:shared_preferences/shared_preferences.dart'; // ⬅️ added
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:couple_expenses/controllers/wallet_controller.dart';
 import '../utils/date_utils_ext.dart';
@@ -58,7 +58,7 @@ class ExpensesController extends GetxController {
       final wc = Get.find<WalletController>();
       _walletIdWorker = ever<String?>(wc.walletId, (_) {
         _bindAnchorDay();
-        _loadSelectedPeriod(); // ⬅️ load persisted month/year for this wallet
+        _loadSelectedPeriod(); // load persisted month/year for this wallet
       });
     }
 
@@ -125,7 +125,6 @@ class ExpensesController extends GetxController {
 
       await prefs.setInt('exp_period_month_$scope', mNum);
       await prefs.setInt('exp_period_year_$scope', y);
-      // log('💾 saved period $y-$mNum for $scope');
     } catch (e) {
       log('⚠️ failed to save selected period: $e');
     }
@@ -148,7 +147,6 @@ class ExpensesController extends GetxController {
       if (y != null && y > 1900 && y < 3000) {
         selectedYear.value = y;
       }
-      // log('📥 loaded period ${selectedYear.value}-${monthFromString(selectedMonth.value)} for $scope');
     } catch (e) {
       log('⚠️ failed to load selected period: $e');
     }
@@ -223,8 +221,8 @@ class ExpensesController extends GetxController {
           'unit_price': <double>[],
           'date_of_purchase': Timestamp.fromDate(purchaseDate),
           'category': category,
-          'userId': userId, // who added it
-          'created_at': Timestamp.fromDate(now), // for ordering
+          'userId': userId,                       // who added it
+          'created_at': FieldValue.serverTimestamp(), // <-- server time for ordering
         };
       });
 
@@ -261,8 +259,7 @@ class ExpensesController extends GetxController {
       if (firstDocId != null) {
         lastAddedId.value = firstDocId;
 
-        final key =
-            '${selectedMonth.value}-${selectedYear.value}';
+        final key = '${selectedMonth.value}-${selectedYear.value}';
         invalidationCounters[key] = (invalidationCounters[key] ?? 0) + 1;
 
         Future.delayed(const Duration(seconds: 1), () {
@@ -312,6 +309,7 @@ class ExpensesController extends GetxController {
         .where('date_of_purchase', isGreaterThanOrEqualTo: start)
         .where('date_of_purchase', isLessThan: nextStart) // exclusive upper bound
         .orderBy('date_of_purchase', descending: true)
+        .orderBy('created_at', descending: true) // tie-breaker for same day
         .snapshots();
   }
 
@@ -335,9 +333,11 @@ class ExpensesController extends GetxController {
         .where('date_of_purchase', isGreaterThanOrEqualTo: start)
         .where('date_of_purchase', isLessThan: nextStart) // exclusive upper bound
         .orderBy('date_of_purchase', descending: true)
+        .orderBy('created_at', descending: true) // tie-breaker for same day
         .snapshots();
   }
-   Future<void> deleteReceipt(String docId) async {
+
+  Future<void> deleteReceipt(String docId) async {
     final wId = walletId.value ??
         (Get.isRegistered<WalletController>() ? Get.find<WalletController>().walletId.value : null);
     final uid = FirebaseAuth.instance.currentUser?.uid;
