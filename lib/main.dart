@@ -1,6 +1,8 @@
 // lib/main.dart
+import 'package:couple_expenses/controllers/expenses_controller.dart';
 import 'package:couple_expenses/screens/auth_gate.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -10,8 +12,7 @@ import 'package:sizer/sizer.dart';
 import 'firebase_options.dart';
 import 'controllers/auth_controller.dart';
 import 'controllers/theme_controller.dart';
-import 'screens/login_screen.dart';
-import 'screens/expenses_root_screen.dart';
+
 
 // ⬇️ add this import
 import 'theme/app_theme.dart';
@@ -28,9 +29,19 @@ Future<void> main() async {
   } catch (e) {
     debugPrint('dotenv not loaded: $e');
   }
-
+  debugPrint(
+    'AZURE=${dotenv.env['AZURE_SPEECH_KEY']?.substring(0,6)}..., '
+    'PROJ=${dotenv.env['GCP_PROJECT_ID']}',
+  );
   // Controllers
-  Get.put(
+  final assetPath = dotenv.env['GCP_SA_ASSET'];
+try {
+  final bytes = await rootBundle.load(assetPath!);
+  debugPrint('SA asset OK: $assetPath (${bytes.lengthInBytes} bytes)');
+} catch (e) {
+  debugPrint('SA asset MISSING: $assetPath -> $e');
+}
+ Get.put(
     AuthController(
       clientId: dotenv.maybeGet('GSI_CLIENT_ID'),
       serverClientId: dotenv.maybeGet('GSI_SERVER_CLIENT_ID'),
@@ -38,6 +49,12 @@ Future<void> main() async {
     permanent: true,
   );
   Get.put(ThemeController(), permanent: true);
+
+  // ⬇️ Register ExpensesController globally so MicController can find it
+  Get.put(
+    ExpensesController(collectionName: 'expenses'),
+    permanent: true,
+  );
 
   debugPrint('Cold start: currentUser = ${FirebaseAuth.instance.currentUser?.uid}');
   runApp(const MyApp());

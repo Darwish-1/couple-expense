@@ -18,9 +18,7 @@ class RecordingSection extends StatelessWidget {
       return OptimizedMicIndicator(
         isRecording: mic.isRecording.value,
         isProcessing: mic.isProcessing.value,
-        scaleAnimation: null,
-        slideAnimation: null,
-        animationController: null,
+     
       );
     });
   }

@@ -171,121 +171,153 @@ class ExpensesController extends GetxController {
   }
 
   Future<void> saveMultipleExpenses(List<Map<String, dynamic>> expenses) async {
-    log('🎯 [DEBUG] Starting saveMultipleExpenses with ${expenses.length} expenses');
+  log('🎯 [DEBUG] Starting saveMultipleExpenses with ${expenses.length} expenses');
 
-    if (expenses.isEmpty) {
-      lastError.value = 'Nothing to save.';
-      return;
+  if (expenses.isEmpty) {
+    lastError.value = 'Nothing to save.';
+    return;
+  }
+
+  final user = FirebaseAuth.instance.currentUser;
+  final userId = user?.uid;
+  final wId = walletId.value ??
+      (Get.isRegistered<WalletController>() ? Get.find<WalletController>().walletId.value : null);
+  final now = DateTime.now();
+
+  if (userId == null) {
+    lastError.value = 'User not authenticated.';
+    return;
+  }
+  if (wId == null) {
+    lastError.value = 'No wallet selected.';
+    return;
+  }
+
+  // --- Period bounds for clamping ---
+  final selMonthNum = monthFromString(selectedMonth.value);
+  final selYear = selectedYear.value;
+  final anchor = budgetAnchorDay.value;
+
+  final periodStart = startOfBudgetPeriod(selYear, selMonthNum, anchor);
+  final periodNext  = nextStartOfBudgetPeriod(selYear, selMonthNum, anchor);
+
+  DateTime _midnight(DateTime d) => DateTime(d.year, d.month, d.day);
+  final todayMidnight = _midnight(now);
+
+  // We group by (category + purchase-date) to keep your existing grouping behavior.
+  final Map<String, Map<String, dynamic>> grouped = {};
+
+  for (final expense in expenses) {
+    final parsedDate = tryParseAnyDate(expense['date_of_purchase'] as String?);
+
+    // Base fields from parser
+    final category  = (expense['category'] as String?)?.trim().isNotEmpty == true
+        ? expense['category'] as String
+        : 'General';
+    final itemName  = (expense['item_name'] ?? '').toString().trim();
+    final unitPrice = (expense['unit_price'] is num)
+        ? (expense['unit_price'] as num).toDouble()
+        : double.tryParse((expense['unit_price'] ?? '').toString());
+
+    if (itemName.isEmpty || unitPrice == null) {
+      log('Skipping expense due to missing item_name or unit_price: $expense');
+      continue;
     }
 
-    final user = FirebaseAuth.instance.currentUser;
-    final userId = user?.uid;
-    final wId = walletId.value ??
-        (Get.isRegistered<WalletController>() ? Get.find<WalletController>().walletId.value : null);
-    final now = DateTime.now();
-
-    if (userId == null) {
-      lastError.value = 'User not authenticated.';
-      return;
-    }
-    if (wId == null) {
-      lastError.value = 'No wallet selected.';
-      return;
+    // --- Clamp date: use parsed (midnight) if valid and within selected period;
+    //     otherwise force to today@midnight so it appears in current list.
+    DateTime purchaseDate = _midnight(parsedDate ?? now);
+    if (purchaseDate.isBefore(periodStart) || !purchaseDate.isBefore(periodNext)) {
+      purchaseDate = todayMidnight;
     }
 
-    // We use the parsed date (or "now") as-is; we do NOT force the selected label month.
-    final Map<String, Map<String, dynamic>> grouped = {};
+    final y = purchaseDate.year.toString().padLeft(4, '0');
+    final m = purchaseDate.month.toString().padLeft(2, '0');
+    final d = purchaseDate.day.toString().padLeft(2, '0');
+    final dateKey = '$y-$m-$d';
+    final groupKey = '$category-$dateKey';
 
-    for (final expense in expenses) {
-      final parsedDate = tryParseAnyDate(expense['date_of_purchase'] as String?);
-      final category = (expense['category'] as String?) ?? 'General';
-      final itemName = expense['item_name'] as String?;
-      final unitPrice = (expense['unit_price'] as num?)?.toDouble();
+    grouped.putIfAbsent(groupKey, () {
+      return {
+        'item_name': <String>[],
+        'unit_price': <double>[],
+        'date_of_purchase': Timestamp.fromDate(purchaseDate),
+        'category': category,
+        'userId': userId,                           // who added it
+        'created_at': FieldValue.serverTimestamp(), // server time for ordering
+      };
+    });
 
-      if (itemName == null || unitPrice == null) {
-        log('Skipping expense due to missing item_name or unit_price: $expense');
-        continue;
-      }
+    (grouped[groupKey]!['item_name'] as List).add(itemName);
+    (grouped[groupKey]!['unit_price'] as List).add(unitPrice);
+  }
 
-      final purchaseDate = parsedDate ?? now;
+  log('🎯 [DEBUG] Created ${grouped.length} grouped expenses');
 
-      final y = purchaseDate.year.toString().padLeft(4, '0');
-      final m = purchaseDate.month.toString().padLeft(2, '0');
-      final d = purchaseDate.day.toString().padLeft(2, '0');
-      final dateKey = '$y-$m-$d';
-      final groupKey = '$category-$dateKey';
+  if (grouped.isEmpty) {
+    lastError.value = 'Nothing valid to save.';
+    return;
+  }
 
-      grouped.putIfAbsent(groupKey, () {
-        return {
-          'item_name': <String>[],
-          'unit_price': <double>[],
-          'date_of_purchase': Timestamp.fromDate(purchaseDate),
-          'category': category,
-          'userId': userId,                       // who added it
-          'created_at': FieldValue.serverTimestamp(), // <-- server time for ordering
-        };
+  // Instant UI: mark as pending
+final pending = grouped.values.toList();
+// fake created_at so sort puts it at top
+for (final e in pending) {
+  e['created_at'] = Timestamp.fromDate(DateTime.now().add(const Duration(milliseconds: 1)));
+}
+pendingExpenses.assignAll(pending);
+  hasJustAddedExpenses.value = true;
+
+  final batch = FirebaseFirestore.instance.batch();
+  String? firstDocId;
+
+  try {
+    final col = FirebaseFirestore.instance
+        .collection('wallets')
+        .doc(wId)
+        .collection('receipts');
+
+    for (final data in grouped.values) {
+      final docRef = col.doc();
+      batch.set(docRef, data);
+      firstDocId ??= docRef.id;
+      log('🎯 [DEBUG] Added to batch: ${docRef.id}');
+    }
+
+    log('🎯 [DEBUG] About to commit batch...');
+    await batch.commit();
+    log('🎯 [DEBUG] Batch committed successfully!');
+
+    if (firstDocId != null) {
+      lastAddedId.value = firstDocId;
+
+      final key = '${selectedMonth.value}-${selectedYear.value}';
+      invalidationCounters[key] = (invalidationCounters[key] ?? 0) + 1;
+
+      Future.delayed(const Duration(seconds: 1), () {
+        lastAddedId.value = null;
       });
-
-      (grouped[groupKey]!['item_name'] as List).add(itemName);
-      (grouped[groupKey]!['unit_price'] as List).add(unitPrice);
     }
 
-    log('🎯 [DEBUG] Created ${grouped.length} grouped expenses');
-
-    // Instant UI: mark as pending
-    pendingExpenses.assignAll(grouped.values.toList());
-    hasJustAddedExpenses.value = true;
-
-    final batch = FirebaseFirestore.instance.batch();
-    String? firstDocId;
-
-    try {
-      final col = FirebaseFirestore.instance
-          .collection('wallets')
-          .doc(wId)
-          .collection('receipts');
-
-      for (final data in grouped.values) {
-        final docRef = col.doc();
-        batch.set(docRef, data);
-        firstDocId ??= docRef.id;
-        log('🎯 [DEBUG] Added to batch: ${docRef.id}');
-      }
-
-      log('🎯 [DEBUG] About to commit batch...');
-      await batch.commit();
-      log('🎯 [DEBUG] Batch committed successfully!');
-
-      if (firstDocId != null) {
-        lastAddedId.value = firstDocId;
-
-        final key = '${selectedMonth.value}-${selectedYear.value}';
-        invalidationCounters[key] = (invalidationCounters[key] ?? 0) + 1;
-
-        Future.delayed(const Duration(seconds: 1), () {
-          lastAddedId.value = null;
-        });
-      }
-
-      Future.delayed(const Duration(milliseconds: 1500), () {
-        pendingExpenses.clear();
-        hasJustAddedExpenses.value = false;
-      });
-
-      lastSuccess.value =
-          'Saved ${grouped.length} grouped entr${grouped.length == 1 ? 'y' : 'ies'}.';
-      lastError.value = '';
-      log('🎯 [DEBUG] Successfully completed saveMultipleExpenses');
-    } catch (e) {
+    Future.delayed(const Duration(milliseconds: 1500), () {
       pendingExpenses.clear();
       hasJustAddedExpenses.value = false;
-      lastAddedId.value = null;
+    });
 
-      lastError.value = 'Save failed. $e';
-      lastSuccess.value = '';
-      log('🎯 [DEBUG] ERROR in saveMultipleExpenses: $e');
-    }
+    lastSuccess.value =
+        'Saved ${grouped.length} grouped entr${grouped.length == 1 ? 'y' : 'ies'}.';
+    lastError.value = '';
+    log('🎯 [DEBUG] Successfully completed saveMultipleExpenses');
+  } catch (e) {
+    pendingExpenses.clear();
+    hasJustAddedExpenses.value = false;
+    lastAddedId.value = null;
+
+    lastError.value = 'Save failed. $e';
+    lastSuccess.value = '';
+    log('🎯 [DEBUG] ERROR in saveMultipleExpenses: $e');
   }
+}
 
   /// My expenses under /wallets/{wId}/receipts for the selected month (scoped by wallet + anchor day)
   Stream<QuerySnapshot<Map<String, dynamic>>> streamMyMonthInWallet() {

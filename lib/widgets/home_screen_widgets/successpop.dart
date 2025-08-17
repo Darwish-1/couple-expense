@@ -10,7 +10,7 @@ class SuccessPopUp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: Colors.transparent, // No overlay
+      color: Colors.transparent,
       child: Center(
         child: Animate(
           effects: [
@@ -30,36 +30,28 @@ class SuccessPopUp extends StatelessWidget {
             ),
           ],
           child: Container(
-            margin: const EdgeInsets.symmetric(horizontal: 32),
-            padding: const EdgeInsets.all(32),
+            width: 180,
+            height: 180,
             decoration: BoxDecoration(
               color: Colors.white,
-              borderRadius: BorderRadius.circular(20),
+              shape: BoxShape.circle,
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.15),
-                  blurRadius: 20,
+                  color: Colors.black.withOpacity(0.1),
+                  blurRadius: 30,
                   spreadRadius: 0,
-                  offset: const Offset(0, 10),
+                  offset: const Offset(0, 8),
                 ),
               ],
             ),
             child: Column(
-              mainAxisSize: MainAxisSize.min,
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // Animated checkmark with background circle
-                Container(
-                  width: 80,
-                  height: 80,
-                  decoration: BoxDecoration(
-                    color: Colors.green.shade50,
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(
-                    Icons.check_circle,
-                    size: 50,
-                    color: Colors.green.shade600,
-                  ),
+                // Animated checkmark icon
+                Icon(
+                  Icons.check_circle_rounded,
+                  size: 50,
+                  color: const Color(0xFF10B981), // Green color
                 )
                 .animate()
                 .scale(
@@ -70,115 +62,42 @@ class SuccessPopUp extends StatelessWidget {
                   curve: Curves.elasticOut,
                 ),
                 
-                const SizedBox(height: 20),
+                const SizedBox(height: 12),
                 
-                // Main success text
+                // Success text
                 Text(
-                  '✨ Success! ✨',
-                  textAlign: TextAlign.center,
-                  style: GoogleFonts.inter(
-                    fontSize: 24,
-                    fontWeight: FontWeight.w800,
-                    color: Colors.indigo.shade700,
-                  ),
-                )
-                .animate()
-                .fadeIn(
-                  duration: const Duration(milliseconds: 400),
-                  delay: const Duration(milliseconds: 300),
-                )
-                .slideX(
-                  begin: 0.2,
-                  end: 0,
-                  duration: const Duration(milliseconds: 400),
-                  delay: const Duration(milliseconds: 300),
-                ),
-                
-                const SizedBox(height: 8),
-                
-                Text(
-                  'Expense Saved!',
-                  textAlign: TextAlign.center,
+                  'Saved!',
                   style: GoogleFonts.inter(
                     fontSize: 18,
                     fontWeight: FontWeight.w600,
-                    color: Colors.grey.shade700,
+                    color: const Color(0xFF374151),
+                    letterSpacing: -0.2,
                   ),
                 )
                 .animate()
                 .fadeIn(
                   duration: const Duration(milliseconds: 400),
-                  delay: const Duration(milliseconds: 400),
+                  delay: const Duration(milliseconds: 300),
                 ),
                 
-                if (savedCount > 0) ...[
-                  const SizedBox(height: 16),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 8,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.indigo.shade50,
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: Colors.indigo.shade200,
-                        width: 1,
+                // Count indicator (only show if > 0)
+                if (savedCount > 0)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      '${savedCount} expense${savedCount == 1 ? '' : 's'}',
+                      style: GoogleFonts.inter(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                        color: const Color(0xFF10B981),
                       ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.receipt_long,
-                          size: 16,
-                          color: Colors.indigo.shade600,
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          '$savedCount expense${savedCount == 1 ? '' : 's'} processed',
-                          style: GoogleFonts.inter(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w500,
-                            color: Colors.indigo.shade700,
-                          ),
-                        ),
-                      ],
                     ),
                   )
                   .animate()
                   .fadeIn(
                     duration: const Duration(milliseconds: 400),
-                    delay: const Duration(milliseconds: 500),
-                  )
-                  .slideY(
-                    begin: 0.3,
-                    end: 0,
-                    duration: const Duration(milliseconds: 400),
-                    delay: const Duration(milliseconds: 500),
+                    delay: const Duration(milliseconds: 400),
                   ),
-                ],
-                
-                const SizedBox(height: 20),
-                
-                // Optional: Add a subtle "tap anywhere to dismiss" hint
-                Text(
-                  'Tap anywhere to continue',
-                  style: GoogleFonts.inter(
-                    fontSize: 12,
-                    color: Colors.grey.shade500,
-                    fontStyle: FontStyle.italic,
-                  ),
-                )
-                .animate(onPlay: (controller) => controller.repeat(reverse: true))
-                .fadeIn(
-                  duration: const Duration(milliseconds: 800),
-                  delay: const Duration(milliseconds: 1000),
-                )
-                .then()
-                .fadeOut(
-                  duration: const Duration(milliseconds: 800),
-                ),
               ],
             ),
           ),
