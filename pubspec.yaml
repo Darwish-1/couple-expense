@@ -95,9 +95,8 @@ flutter:
   # To add assets to your application, add an assets section, like this:
   assets:
     - .env
-    - assets/credentials/couple-expenses-467221-163c0fa3d585.json
     - assets/icons/categories/
-    - assets/keys/couple-expenses-467221-25db78910a71.json
+    - assets/keys/couple-expenses-467221-463d73a15086.json
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

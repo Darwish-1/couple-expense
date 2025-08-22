@@ -55,114 +55,105 @@ class _MyExpensesScreenState extends State<MyExpensesScreen> {
       );
     }
 
-    mic = Get.put(MicController());
+    mic = Get.isRegistered<MicController>() ? Get.find<MicController>() : Get.put(MicController());
   }
 
   @override
   void dispose() {
-    if (Get.isRegistered<MicController>()) {
-      Get.delete<MicController>();
-    }
+    // keep MicController alive for shared screen too
     super.dispose();
   }
 
   @override
-Widget build(BuildContext context) {
-  final w = MediaQuery.of(context).size.width;
-  final isWide = w >= 600;
+  Widget build(BuildContext context) {
+    final w = MediaQuery.of(context).size.width;
+    final isWide = w >= 600;
 
-  return Scaffold(
-    backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-    appBar: AppBar(
-      elevation: 0,
-      backgroundColor: const Color.fromRGBO(250, 247, 240, 1),
-      foregroundColor: Theme.of(context).colorScheme.onSurface,
-      title: Text(
-        'My Expenses',
-        style: TextStyle(
-          fontWeight: FontWeight.w600,
-          fontSize: 18.sp,
+    return Scaffold(
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      appBar: AppBar(
+        elevation: 0,
+        backgroundColor: const Color.fromRGBO(250, 247, 240, 1),
+        foregroundColor: Theme.of(context).colorScheme.onSurface,
+        title: Text(
+          'My Expenses',
+          style: TextStyle(fontWeight: FontWeight.w600, fontSize: 18.sp),
         ),
+        actions: [
+          IconButton(
+            icon: Icon(Icons.settings, size: 20.sp),
+            onPressed: () => Get.to(() => const SettingsScreen()),
+          ),
+        ],
       ),
-      actions: [
-        IconButton(
-          icon: Icon(Icons.settings, size: 20.sp),
-          onPressed: () {
-            Get.to(() => const SettingsScreen());
-          },
-        ),
-      ],
-    ),
-    body: Stack(
-      children: [
-        // Main content
-        SafeArea(
-          child: Obx(() {
-            // Show loading only if wallet is still loading
-            if (wc.walletId.value == null || wc.loading.value) {
-              return _buildMainLoadingState();
-            }
+      body: Stack(
+        children: [
+          // Main content
+          SafeArea(
+            child: Obx(() {
+              if (wc.walletId.value == null || wc.loading.value) {
+                return _buildMainLoadingState();
+              }
+              return Column(
+                children: [
+                  SizedBox(height: 2.h),
+                  const _EnhancedSummaryCard(),   // my summary (private + my shared)
+                  _buildInteractivePeriodInfo(),
+                  _buildErrorMessage(),
+                  SizedBox(height: 1.h),
+                  Expanded(child: _buildExpensesList(isWide: isWide)),
+                ],
+              );
+            }),
+          ),
 
-            // Once wallet is ready, show the main UI
-            return Column(
-              children: [
-                SizedBox(height: 2.h),
-                const _EnhancedSummaryCard(),
-                _buildInteractivePeriodInfo(),
-                _buildErrorMessage(),
-                SizedBox(height: 1.h),
-                Expanded(child: _buildExpensesList(isWide: isWide)),
+          // Mic overlay + success popup
+          const RecordingSection(),
+          Obx(() => _showSuccess.value
+              ? SuccessPopUp(
+                  savedCount: _savedCount.value,
+                  contextLabel: 'My Expenses',
+                )
+              : const SizedBox.shrink()),
+        ],
+      ),
+      floatingActionButton: _buildEnhancedFAB(isWide: isWide),
+    );
+  }
+
+  Widget _buildMainLoadingState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            padding: EdgeInsets.all(6.w),
+            decoration: BoxDecoration(
+              color: Theme.of(context).cardColor,
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.grey.withOpacity(0.1),
+                  spreadRadius: 2.w,
+                  blurRadius: 5.w,
+                ),
               ],
-            );
-          }),
-        ),
-
-        // Mic overlay + success popup
-        const RecordingSection(),
-        Obx(
-          () => _showSuccess.value
-              ? SuccessPopUp(savedCount: _savedCount.value)
-              : const SizedBox.shrink(),
-        ),
-      ],
-    ),
-    floatingActionButton: _buildEnhancedFAB(isWide: isWide),
-  );
-}
-
-Widget _buildMainLoadingState() {
-  return Center(
-    child: Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Container(
-          padding: EdgeInsets.all(6.w),
-          decoration: BoxDecoration(
-            color: Theme.of(context).cardColor,
-            shape: BoxShape.circle,
-            boxShadow: [
-              BoxShadow(
-                color: Colors.grey.withOpacity(0.1),
-                spreadRadius: 2.w,
-                blurRadius: 5.w,
-              ),
-            ],
+            ),
+            child: const CircularProgressIndicator(strokeWidth: 3),
           ),
-          child: const CircularProgressIndicator(strokeWidth: 3),
-        ),
-        SizedBox(height: 3.h),
-        Text(
-          'Setting up your expenses...',
-          style: TextStyle(
-            fontSize: 11.sp,
-            color: Colors.grey.shade700,
-            fontWeight: FontWeight.w500,
+          SizedBox(height: 3.h),
+          Text(
+            'Setting up your expenses...',
+            style: TextStyle(
+              fontSize: 11.sp,
+              color: Colors.grey.shade700,
+              fontWeight: FontWeight.w500,
+            ),
           ),
-        ),
-      ],
-    ),
-  );
-}
+        ],
+      ),
+    );
+  }
 
   Widget _buildInteractivePeriodInfo() {
     final df = DateFormat("d MMMM yyyy");
@@ -326,216 +317,206 @@ Widget _buildMainLoadingState() {
     });
   }
 
- 
-Widget _buildExpensesList({required bool isWide}) {
-  return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-    stream: c.streamMyMonthInWallet(),
-    builder: (context, snap) {
-      if (snap.hasError) {
-        return _buildErrorState(snap.error.toString());
-      }
+  Widget _buildExpensesList({required bool isWide}) {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+  stream: c.streamMyMonthInWallet(includeShared: false), // ← only PRIVATE
+      builder: (context, snap) {
+        if (snap.hasError) {
+          return _buildErrorState(snap.error.toString());
+        }
 
-      // Show skeleton loading instead of spinner while stream loads
-      if (!snap.hasData) {
-        return _buildSkeletonLoading();
-      }
+        // Show skeleton loading instead of spinner while stream loads
+        if (!snap.hasData) {
+          return _buildSkeletonLoading();
+        }
 
-      final docs = snap.data!.docs;
-      if (docs.isEmpty) {
-        return _buildEmptyState();
-      }
+        final docs = snap.data!.docs;
+        if (docs.isEmpty) {
+          return _buildEmptyState();
+        }
 
-      // Rest of your existing list building logic...
-      DateTime _tsOf(QueryDocumentSnapshot<Map<String, dynamic>> d) {
-        final m = d.data();
-        final created = m['created_at'];
-        if (created is Timestamp) return created.toDate();
-        final createdClient = m['created_at_client'];
-        if (createdClient is Timestamp) return createdClient.toDate();
-        final purchased = m['date_of_purchase'];
-        if (purchased is Timestamp) return purchased.toDate();
-        return DateTime.fromMillisecondsSinceEpoch(0);
-      }
+        DateTime _tsOf(QueryDocumentSnapshot<Map<String, dynamic>> d) {
+          final m = d.data();
+          final created = m['created_at'];
+          if (created is Timestamp) return created.toDate();
+          final createdClient = m['created_at_client'];
+          if (createdClient is Timestamp) return createdClient.toDate();
+          final purchased = m['date_of_purchase'];
+          if (purchased is Timestamp) return purchased.toDate();
+          return DateTime.fromMillisecondsSinceEpoch(0);
+        }
 
-      final sortedDocs = List.of(docs)..sort((a, b) => _tsOf(b).compareTo(_tsOf(a)));
-      final useGrid = MediaQuery.of(context).size.width >= 900;
-      final cardPadding = EdgeInsets.all(3.5.w);
-      final containerMargin = EdgeInsets.symmetric(horizontal: 3.w, vertical: 1.h);
+        final sortedDocs = List.of(docs)..sort((a, b) => _tsOf(b).compareTo(_tsOf(a)));
+        final useGrid = MediaQuery.of(context).size.width >= 900;
+        final cardPadding = EdgeInsets.all(3.5.w);
+        final containerMargin = EdgeInsets.symmetric(horizontal: 3.w, vertical: 1.h);
 
-      final listChild = useGrid
-          ? GridView.builder(
-              padding: EdgeInsets.only(bottom: 12.h, top: 1.h),
-              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                crossAxisSpacing: 3.w,
-                mainAxisSpacing: 2.h,
-                childAspectRatio: 3.6,
+        final listChild = useGrid
+            ? GridView.builder(
+                padding: EdgeInsets.only(bottom: 12.h, top: 1.h),
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 2,
+                  crossAxisSpacing: 3.w,
+                  mainAxisSpacing: 2.h,
+                  childAspectRatio: 3.6,
+                ),
+                itemCount: sortedDocs.length,
+                itemBuilder: (_, i) {
+                  final doc = sortedDocs[i];
+                  final data = doc.data();
+                  return _EnhancedExpenseListItem(
+                    docId: doc.id,
+                    data: data,
+                    expensesController: c,
+                    index: i,
+                    cardPadding: cardPadding,
+                  );
+                },
+              )
+            : ListView.builder(
+                padding: EdgeInsets.only(bottom: 12.h, top: 1.h),
+                itemCount: sortedDocs.length,
+                itemBuilder: (_, i) {
+                  final doc = sortedDocs[i];
+                  final data = doc.data();
+                  return _EnhancedExpenseListItem(
+                    docId: doc.id,
+                    data: data,
+                    expensesController: c,
+                    index: i,
+                    cardPadding: cardPadding,
+                  );
+                },
+              );
+
+        return Container(
+          margin: containerMargin,
+          padding: EdgeInsets.all(3.5.w),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surface,
+            borderRadius: BorderRadius.circular(4.w),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.05),
+                blurRadius: 2.w,
+                offset: const Offset(0, 4),
               ),
-              itemCount: sortedDocs.length,
-              itemBuilder: (_, i) {
-                final doc = sortedDocs[i];
-                final data = doc.data();
-                return _EnhancedExpenseListItem(
-                  docId: doc.id,
-                  data: data,
-                  expensesController: c,
-                  index: i,
-                  cardPadding: cardPadding,
-                );
-              },
-            )
-          : ListView.builder(
-              padding: EdgeInsets.only(bottom: 12.h, top: 1.h),
-              itemCount: sortedDocs.length,
-              itemBuilder: (_, i) {
-                final doc = sortedDocs[i];
-                final data = doc.data();
-                return _EnhancedExpenseListItem(
-                  docId: doc.id,
-                  data: data,
-                  expensesController: c,
-                  index: i,
-                  cardPadding: cardPadding,
-                );
-              },
-            );
-
-      return Container(
-        margin: containerMargin,
-        padding: EdgeInsets.all(3.5.w),
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surface,
-          borderRadius: BorderRadius.circular(4.w),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.05),
-              blurRadius: 2.w,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: listChild,
-      );
-    },
-  );
-}
-Widget _buildSkeletonLoading() {
-  return Container(
-    margin: EdgeInsets.symmetric(horizontal: 3.w, vertical: 1.h),
-    padding: EdgeInsets.all(3.5.w),
-    decoration: BoxDecoration(
-      color: Theme.of(context).colorScheme.surface,
-      borderRadius: BorderRadius.circular(4.w),
-      boxShadow: [
-        BoxShadow(
-          color: Colors.black.withOpacity(0.05),
-          blurRadius: 2.w,
-          offset: const Offset(0, 4),
-        ),
-      ],
-    ),
-    child: ListView.builder(
-      padding: EdgeInsets.only(bottom: 12.h, top: 1.h),
-      itemCount: 5, // Show 5 skeleton items
-      itemBuilder: (_, i) => _buildSkeletonItem(),
-    ),
-  );
-}
-Widget _buildSkeletonItem() {
-  return Container(
-    margin: EdgeInsets.symmetric(vertical: 0.8.h),
-    decoration: BoxDecoration(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(4.w),
-      border: Border.all(color: Colors.black, width: 0.1),
-      boxShadow: [
-        BoxShadow(
-          color: Colors.black.withOpacity(0.06),
-          spreadRadius: 0.2.w,
-          blurRadius: 2.6.w,
-          offset: const Offset(0, 3),
-        ),
-      ],
-    ),
-    child: Padding(
-      padding: EdgeInsets.all(2.w),
-      child: Row(
-        children: [
-          // Icon placeholder
-          Container(
-            width: 12.w,
-            height: 12.w,
-            decoration: BoxDecoration(
-              color: Colors.grey.shade200,
-              shape: BoxShape.circle,
-            ),
+            ],
           ),
-          SizedBox(width: 4.w),
+          child: listChild,
+        );
+      },
+    );
+  }
 
-          // Text placeholders
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  width: double.infinity,
-                  height: 2.h,
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade200,
-                    borderRadius: BorderRadius.circular(1.w),
-                  ),
-                ),
-                SizedBox(height: 0.6.h),
-                Container(
-                  width: 60.w,
-                  height: 1.5.h,
-                  decoration: BoxDecoration(
-                    color: Colors.grey,
-
-                    
-
-                    borderRadius: BorderRadius.circular(1.w),
-                  ),
-                ),
-                SizedBox(height: 0.8.h),
-                Container(
-                  width: 20.w,
-                  height: 1.2.h,
-                  decoration: BoxDecoration(
-                    color: Colors.grey,
-                    borderRadius: BorderRadius.circular(2.5.w),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          SizedBox(width: 3.w),
-
-          // Price placeholder
-          Container(
-            width: 20.w,
-            height: 3.h,
-            decoration: BoxDecoration(
-              color: Colors.grey.shade200,
-              borderRadius: BorderRadius.circular(2.5.w),
-            ),
-          ),
-          SizedBox(width: 2.w),
-
-          // Menu placeholder
-          Container(
-            width: 8.w,
-            height: 4.h,
-            decoration: BoxDecoration(
-              color: Colors.grey,
-              borderRadius: BorderRadius.circular(2.w),
-            ),
+  Widget _buildSkeletonLoading() {
+    return Container(
+      margin: EdgeInsets.symmetric(horizontal: 3.w, vertical: 1.h),
+      padding: EdgeInsets.all(3.5.w),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        borderRadius: BorderRadius.circular(4.w),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 2.w,
+            offset: const Offset(0, 4),
           ),
         ],
       ),
-    ),
-  );
-}
+      child: ListView.builder(
+        padding: EdgeInsets.only(bottom: 12.h, top: 1.h),
+        itemCount: 5,
+        itemBuilder: (_, i) => _buildSkeletonItem(),
+      ),
+    );
+  }
+
+  Widget _buildSkeletonItem() {
+    return Container(
+      margin: EdgeInsets.symmetric(vertical: 0.8.h),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(4.w),
+        border: Border.all(color: Colors.black, width: 0.1),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.06),
+            spreadRadius: 0.2.w,
+            blurRadius: 2.6.w,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: EdgeInsets.all(2.w),
+        child: Row(
+          children: [
+            Container(
+              width: 12.w,
+              height: 12.w,
+              decoration: BoxDecoration(
+                color: Colors.grey.shade200,
+                shape: BoxShape.circle,
+              ),
+            ),
+            SizedBox(width: 4.w),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: double.infinity,
+                    height: 2.h,
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade200,
+                      borderRadius: BorderRadius.circular(1.w),
+                    ),
+                  ),
+                  SizedBox(height: 0.6.h),
+                  Container(
+                    width: 60.w,
+                    height: 1.5.h,
+                    decoration: BoxDecoration(
+                      color: Colors.grey,
+                      borderRadius: BorderRadius.circular(1.w),
+                    ),
+                  ),
+                  SizedBox(height: 0.8.h),
+                  Container(
+                    width: 20.w,
+                    height: 1.2.h,
+                    decoration: BoxDecoration(
+                      color: Colors.grey,
+                      borderRadius: BorderRadius.circular(2.5.w),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            SizedBox(width: 3.w),
+            Container(
+              width: 20.w,
+              height: 3.h,
+              decoration: BoxDecoration(
+                color: Colors.grey.shade200,
+                borderRadius: BorderRadius.circular(2.5.w),
+              ),
+            ),
+            SizedBox(width: 2.w),
+            Container(
+              width: 8.w,
+              height: 4.h,
+              decoration: BoxDecoration(
+                color: Colors.grey,
+                borderRadius: BorderRadius.circular(2.w),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   Widget _buildLoadingState() {
     return Center(
@@ -743,15 +724,16 @@ Widget _buildSkeletonItem() {
 
       Future<void> _handlePress() async {
         if (!rec) {
+          mic.target = MicTarget.my; // 👈 save as PRIVATE by default in My screen
           await mic.startRecording();
         } else {
           final result = await mic.stopRecordingAndParse();
           if (!mounted) return;
           if (result != null && result.expenses.isNotEmpty) {
-            await c.saveMultipleExpenses(result.expenses);
-            _savedCount.value = result.expenses.length;
+            final n = await c.saveParsedExpenses(items: result.expenses, shared: false);
+            _savedCount.value = n;
             _showSuccess.value = true;
-            Future.delayed(const Duration(seconds: 2), () {
+            Future.delayed(const Duration(seconds: 3), () {
               if (mounted) _showSuccess.value = false;
             });
           }
@@ -817,13 +799,9 @@ class _EnhancedExpenseListItem extends StatelessWidget {
     final date = (data['date_of_purchase'] as Timestamp?)?.toDate();
     final total = prices.fold<double>(0, (p, e) => p + e.toDouble());
 
-    // Category color used ONLY for the icon bubble
     final base = _getCategoryColor(category);
     final iconBg = base.withOpacity(0.15);
-
-    // List item background is ALWAYS white
     final itemBg = Colors.white;
-
     final iconBox = 12.w;
 
     return Dismissible(
@@ -877,7 +855,7 @@ class _EnhancedExpenseListItem extends StatelessWidget {
       child: Container(
         margin: EdgeInsets.symmetric(vertical: 0.8.h),
         decoration: BoxDecoration(
-          color: itemBg, // always white list item
+          color: itemBg,
           borderRadius: BorderRadius.circular(4.w),
           border: Border.all(color: Colors.black, width: 0.1),
           boxShadow: [
@@ -893,7 +871,6 @@ class _EnhancedExpenseListItem extends StatelessWidget {
           padding: EdgeInsets.all(2.w),
           child: Row(
             children: [
-              // Category-colored circular background JUST for the icon
               Container(
                 width: iconBox,
                 height: iconBox,
@@ -908,8 +885,6 @@ class _EnhancedExpenseListItem extends StatelessWidget {
                 ),
               ),
               SizedBox(width: 4.w),
-
-              // Texts
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -957,8 +932,6 @@ class _EnhancedExpenseListItem extends StatelessWidget {
                 ),
               ),
               SizedBox(width: 3.w),
-
-              // Amount + items count
               Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 crossAxisAlignment: CrossAxisAlignment.end,
@@ -999,8 +972,6 @@ class _EnhancedExpenseListItem extends StatelessWidget {
                 ],
               ),
               SizedBox(width: 2.w),
-
-              // Actions menu
               Container(
                 decoration: BoxDecoration(
                   color: Colors.grey.shade50,

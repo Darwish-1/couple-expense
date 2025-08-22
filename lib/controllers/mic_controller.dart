@@ -1,17 +1,18 @@
-// lib/controllers/mic_controller.dart
 import 'dart:async';
 import 'dart:io';
 import 'package:get/get.dart';
 import 'package:record/record.dart';
 import 'package:path_provider/path_provider.dart';
 import '../services/azure_gemini_direct_parser.dart';
-import 'expenses_controller.dart' show saveMultipleExpenses, ExpensesController;
+import 'expenses_controller.dart';
 
 class MicParseResult {
   final String transcript;
   final List<Map<String, dynamic>> expenses;
   MicParseResult({required this.transcript, required this.expenses});
 }
+
+enum MicTarget { my, shared }
 
 class MicController extends GetxController {
   final RxBool isRecording = false.obs;
@@ -24,7 +25,7 @@ class MicController extends GetxController {
   final int maxSeconds = 15;
   Timer? _timer;
   int _elapsedSeconds = 0;
-  bool _autoStopped = false; // 👈 flag to know if timer stopped it
+  bool _autoStopped = false; // timer stopped it
 
   AudioRecorder? _recorder;
 
@@ -32,7 +33,7 @@ class MicController extends GetxController {
     final dir = await getTemporaryDirectory();
     final ext = useWebM ? 'webm' : 'm4a';
     return '${dir.path}/temp_audio_${DateTime.now().millisecondsSinceEpoch}.$ext';
-  }
+    }
 
   Future<void> startRecording() async {
     try {
@@ -65,10 +66,9 @@ class MicController extends GetxController {
       _timer = Timer.periodic(const Duration(seconds: 1), (t) async {
         _elapsedSeconds++;
         recordingProgress.value = _elapsedSeconds / maxSeconds;
-
         if (_elapsedSeconds >= maxSeconds) {
-          _autoStopped = true; // 👈 mark auto-stop
-          await stopRecordingAndParse();
+          _autoStopped = true;
+          await stopRecordingAndParse(); // will auto-save
         }
       });
     } catch (e) {
@@ -79,6 +79,9 @@ class MicController extends GetxController {
   }
 
   /// Stops recording, sends audio to Azure, parses with Gemini, returns both.
+  /// Set [target] before calling this (or immediately after start) to control shared/private.
+  MicTarget target = MicTarget.my;
+
   Future<MicParseResult?> stopRecordingAndParse() async {
     try {
       if (!isRecording.value || _recorder == null) return null;
@@ -101,9 +104,8 @@ class MicController extends GetxController {
       final result = await AzureGeminiDirectParser.transcribeAndParse(file);
 
       // Clean up temp
-      try {
-        await file.delete();
-      } catch (_) {}
+       // Clean up temp
+      try { await file.delete(); } catch (_) {}
 
       final tx = (result?['transcript'] ?? '').toString();
       final ex = ((result?['expenses'] ?? []) as List)
@@ -113,13 +115,8 @@ class MicController extends GetxController {
 
       transcript.value = tx.trim().isEmpty ? '[No speech detected]' : tx;
 
-      // 👇 auto-save only if timer forced the stop
-      if (_autoStopped) {
-        _autoStopped = false; // reset
-        if (ex.isNotEmpty) {
-await Get.find<ExpensesController>().saveMultipleExpenses(ex);
-        }
-      }
+      // ❌ Do NOT auto-save. Let the screen decide (we’ll show a confirmation popup there).
+      // if (_autoStopped) { ... }
 
       return MicParseResult(transcript: tx, expenses: ex);
     } finally {

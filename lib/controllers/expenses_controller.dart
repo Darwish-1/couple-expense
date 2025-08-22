@@ -1,4 +1,3 @@
-// lib/controllers/expenses_controller.dart
 import 'dart:async';
 import 'dart:developer';
 
@@ -12,7 +11,7 @@ import '../utils/date_utils_ext.dart';
 
 class ExpensesController extends GetxController {
   ExpensesController({
-    // kept for backwards-compat, not used anymore (we always write under wallet subcollection)
+    // kept for backwards-compat, not used for writes anymore
     required this.collectionName,
     String? walletId,
   }) : walletId = RxnString(walletId);
@@ -30,11 +29,6 @@ class ExpensesController extends GetxController {
   /// Budget anchor day (1..31). Period = [YYYY-MM-anchor, nextMonth(anchor))
   /// Loaded from wallet: wallets/{id}.budget_anchor_day (default 1)
   final RxInt budgetAnchorDay = 1.obs;
-
-  /// Instant UI feedback
-  final RxList<Map<String, dynamic>> pendingExpenses = <Map<String, dynamic>>[].obs;
-  final RxBool hasJustAddedExpenses = false.obs;
-  final RxnString lastAddedId = RxnString();
 
   /// Info banners
   final RxString lastError = ''.obs;
@@ -170,183 +164,164 @@ class ExpensesController extends GetxController {
     lastSuccess.value = 'Start day set to $clamped';
   }
 
-  Future<void> saveMultipleExpenses(List<Map<String, dynamic>> expenses) async {
-  log('🎯 [DEBUG] Starting saveMultipleExpenses with ${expenses.length} expenses');
+  // ============================================================
+  // MIC → DIRECT WRITE (no pending)
+  // ============================================================
 
-  if (expenses.isEmpty) {
-    lastError.value = 'Nothing to save.';
-    return;
-  }
-
-  final user = FirebaseAuth.instance.currentUser;
-  final userId = user?.uid;
-  final wId = walletId.value ??
-      (Get.isRegistered<WalletController>() ? Get.find<WalletController>().walletId.value : null);
-  final now = DateTime.now();
-
-  if (userId == null) {
-    lastError.value = 'User not authenticated.';
-    return;
-  }
-  if (wId == null) {
-    lastError.value = 'No wallet selected.';
-    return;
-  }
-
-  // --- Period bounds for clamping ---
-  final selMonthNum = monthFromString(selectedMonth.value);
-  final selYear = selectedYear.value;
-  final anchor = budgetAnchorDay.value;
-
-  final periodStart = startOfBudgetPeriod(selYear, selMonthNum, anchor);
-  final periodNext  = nextStartOfBudgetPeriod(selYear, selMonthNum, anchor);
-
-  DateTime _midnight(DateTime d) => DateTime(d.year, d.month, d.day);
-  final todayMidnight = _midnight(now);
-
-  // We group by (category + purchase-date) to keep your existing grouping behavior.
-  final Map<String, Map<String, dynamic>> grouped = {};
-
-  for (final expense in expenses) {
-    final parsedDate = tryParseAnyDate(expense['date_of_purchase'] as String?);
-
-    // Base fields from parser
-    final category  = (expense['category'] as String?)?.trim().isNotEmpty == true
-        ? expense['category'] as String
-        : 'General';
-    final itemName  = (expense['item_name'] ?? '').toString().trim();
-    final unitPrice = (expense['unit_price'] is num)
-        ? (expense['unit_price'] as num).toDouble()
-        : double.tryParse((expense['unit_price'] ?? '').toString());
-
-    if (itemName.isEmpty || unitPrice == null) {
-      log('Skipping expense due to missing item_name or unit_price: $expense');
-      continue;
+  /// Save parsed expenses directly to receipts.
+  /// Each parsed map should contain: item_name, unit_price, category?, date_of_purchase?
+  /// [shared] controls visibility: true -> 'shared', false -> 'private'
+  Future<int> saveParsedExpenses({
+    required List<Map<String, dynamic>> items,
+    required bool shared,
+  }) async {
+    if (items.isEmpty) {
+      lastError.value = 'Nothing to save.';
+      return 0;
     }
 
-    // --- Clamp date: use parsed (midnight) if valid and within selected period;
-    //     otherwise force to today@midnight so it appears in current list.
-    DateTime purchaseDate = _midnight(parsedDate ?? now);
-    if (purchaseDate.isBefore(periodStart) || !purchaseDate.isBefore(periodNext)) {
-      purchaseDate = todayMidnight;
+    final user = FirebaseAuth.instance.currentUser;
+    final userId = user?.uid;
+    final wId = walletId.value ??
+        (Get.isRegistered<WalletController>() ? Get.find<WalletController>().walletId.value : null);
+    final now = DateTime.now();
+
+    if (userId == null) {
+      lastError.value = 'User not authenticated.';
+      return 0;
+    }
+    if (wId == null) {
+      lastError.value = 'No wallet selected.';
+      return 0;
     }
 
-    final y = purchaseDate.year.toString().padLeft(4, '0');
-    final m = purchaseDate.month.toString().padLeft(2, '0');
-    final d = purchaseDate.day.toString().padLeft(2, '0');
-    final dateKey = '$y-$m-$d';
-    final groupKey = '$category-$dateKey';
+    // Period bounds for clamping
+    final selMonthNum = monthFromString(selectedMonth.value);
+    final selYear = selectedYear.value;
+    final anchor = budgetAnchorDay.value;
 
-    grouped.putIfAbsent(groupKey, () {
-      return {
+    final periodStart = startOfBudgetPeriod(selYear, selMonthNum, anchor);
+    final periodNext  = nextStartOfBudgetPeriod(selYear, selMonthNum, anchor);
+
+    DateTime _midnight(DateTime d) => DateTime(d.year, d.month, d.day);
+    final todayMidnight = _midnight(now);
+
+    // Normalize to grouped receipts: group by (category + date)
+    // We’ll store arrays item_name[] and unit_price[] per receipt
+    String kOf(String category, DateTime d) =>
+        '$category-${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, "0")}';
+
+    final Map<String, Map<String, dynamic>> grouped = {};
+
+    for (final raw in items) {
+      final parsedDate = tryParseAnyDate(raw['date_of_purchase'] as String?);
+      final category  = (raw['category'] as String?)?.trim().isNotEmpty == true
+          ? raw['category'] as String
+          : 'General';
+      final itemName  = (raw['item_name'] ?? '').toString().trim();
+      final unitPrice = (raw['unit_price'] is num)
+          ? (raw['unit_price'] as num).toDouble()
+          : double.tryParse((raw['unit_price'] ?? '').toString());
+
+      if (itemName.isEmpty || unitPrice == null) {
+        log('Skipping expense due to missing item_name or unit_price: $raw');
+        continue;
+      }
+
+      // Clamp date into selected period; otherwise pin to today
+      DateTime purchaseDate = _midnight(parsedDate ?? now);
+      if (purchaseDate.isBefore(periodStart) || !purchaseDate.isBefore(periodNext)) {
+        purchaseDate = todayMidnight;
+      }
+
+      final key = kOf(category, purchaseDate);
+      grouped.putIfAbsent(key, () => {
         'item_name': <String>[],
         'unit_price': <double>[],
         'date_of_purchase': Timestamp.fromDate(purchaseDate),
         'category': category,
-        'userId': userId,                           // who added it
-        'created_at': FieldValue.serverTimestamp(), // server time for ordering
-      };
-    });
-
-    (grouped[groupKey]!['item_name'] as List).add(itemName);
-    (grouped[groupKey]!['unit_price'] as List).add(unitPrice);
-  }
-
-  log('🎯 [DEBUG] Created ${grouped.length} grouped expenses');
-
-  if (grouped.isEmpty) {
-    lastError.value = 'Nothing valid to save.';
-    return;
-  }
-
-  // Instant UI: mark as pending
-final pending = grouped.values.toList();
-// fake created_at so sort puts it at top
-for (final e in pending) {
-  e['created_at'] = Timestamp.fromDate(DateTime.now().add(const Duration(milliseconds: 1)));
-}
-pendingExpenses.assignAll(pending);
-  hasJustAddedExpenses.value = true;
-
-  final batch = FirebaseFirestore.instance.batch();
-  String? firstDocId;
-
-  try {
-    final col = FirebaseFirestore.instance
-        .collection('wallets')
-        .doc(wId)
-        .collection('receipts');
-
-    for (final data in grouped.values) {
-      final docRef = col.doc();
-      batch.set(docRef, data);
-      firstDocId ??= docRef.id;
-      log('🎯 [DEBUG] Added to batch: ${docRef.id}');
-    }
-
-    log('🎯 [DEBUG] About to commit batch...');
-    await batch.commit();
-    log('🎯 [DEBUG] Batch committed successfully!');
-
-    if (firstDocId != null) {
-      lastAddedId.value = firstDocId;
-
-      final key = '${selectedMonth.value}-${selectedYear.value}';
-      invalidationCounters[key] = (invalidationCounters[key] ?? 0) + 1;
-
-      Future.delayed(const Duration(seconds: 1), () {
-        lastAddedId.value = null;
+        'userId': userId,
+        'created_at': FieldValue.serverTimestamp(),
+        'updated_at': FieldValue.serverTimestamp(),
+        'visibility': shared ? 'shared' : 'private',
+        'source': 'mic',
       });
+
+      (grouped[key]!['item_name'] as List<String>).add(itemName);
+      (grouped[key]!['unit_price'] as List<double>).add(unitPrice);
     }
 
-    Future.delayed(const Duration(milliseconds: 1500), () {
-      pendingExpenses.clear();
-      hasJustAddedExpenses.value = false;
+    if (grouped.isEmpty) {
+      lastError.value = 'Nothing valid to save.';
+      return 0;
+    }
+
+    final batch = FirebaseFirestore.instance.batch();
+    final col = FirebaseFirestore.instance
+        .collection('wallets').doc(wId).collection('receipts');
+
+    grouped.forEach((_, data) {
+      final ref = col.doc();
+      batch.set(ref, data);
     });
 
-    lastSuccess.value =
-        'Saved ${grouped.length} grouped entr${grouped.length == 1 ? 'y' : 'ies'}.';
-    lastError.value = '';
-    log('🎯 [DEBUG] Successfully completed saveMultipleExpenses');
-  } catch (e) {
-    pendingExpenses.clear();
-    hasJustAddedExpenses.value = false;
-    lastAddedId.value = null;
+    await batch.commit();
 
-    lastError.value = 'Save failed. $e';
-    lastSuccess.value = '';
-    log('🎯 [DEBUG] ERROR in saveMultipleExpenses: $e');
+    final count = grouped.length;
+    lastSuccess.value =
+        'Saved ${count} receipt${count == 1 ? '' : 's'} (${shared ? 'shared' : 'private'}).';
+    lastError.value = '';
+
+    // Optional cache bump
+    final key = '${selectedMonth.value}-${selectedYear.value}';
+    invalidationCounters[key] = (invalidationCounters[key] ?? 0) + 1;
+
+    return count;
   }
+
+  // ============================================================
+  // STREAMS for active receipts
+  // ============================================================
+
+  /// My expenses under /wallets/{wId}/receipts for the selected month
+  /// (created by me; includes both 'private' & 'shared')
+  // in expenses_controller.dart
+Stream<QuerySnapshot<Map<String, dynamic>>> streamMyMonthInWallet({bool includeShared = false}) {
+  final uid = FirebaseAuth.instance.currentUser?.uid;
+  final wId = walletId.value ??
+      (Get.isRegistered<WalletController>() ? Get.find<WalletController>().walletId.value : null);
+  if (uid == null || wId == null) return const Stream.empty();
+
+  final monthNum = monthFromString(selectedMonth.value);
+  final year = selectedYear.value;
+  final anchor = budgetAnchorDay.value;
+
+  final start = Timestamp.fromDate(startOfBudgetPeriod(year, monthNum, anchor));
+  final nextStart = Timestamp.fromDate(nextStartOfBudgetPeriod(year, monthNum, anchor));
+
+  Query<Map<String, dynamic>> q = FirebaseFirestore.instance
+      .collection('wallets')
+      .doc(wId)
+      .collection('receipts')
+      .where('userId', isEqualTo: uid)
+      .where('date_of_purchase', isGreaterThanOrEqualTo: start)
+      .where('date_of_purchase', isLessThan: nextStart);
+
+  // 👉 Only private by default; include shared if asked
+  q = includeShared
+      ? q.where('visibility', whereIn: ['private', 'shared'])
+      : q.where('visibility', isEqualTo: 'private');
+
+  return q
+      .orderBy('date_of_purchase', descending: true)
+      .orderBy('created_at', descending: true)
+      .snapshots();
 }
 
-  /// My expenses under /wallets/{wId}/receipts for the selected month (scoped by wallet + anchor day)
-  Stream<QuerySnapshot<Map<String, dynamic>>> streamMyMonthInWallet() {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    final wId = walletId.value ??
-        (Get.isRegistered<WalletController>() ? Get.find<WalletController>().walletId.value : null);
-    if (uid == null || wId == null) return const Stream.empty();
 
-    final monthNum = monthFromString(selectedMonth.value);
-    final year = selectedYear.value;
-    final anchor = budgetAnchorDay.value;
-
-    final start = Timestamp.fromDate(startOfBudgetPeriod(year, monthNum, anchor));
-    final nextStart = Timestamp.fromDate(nextStartOfBudgetPeriod(year, monthNum, anchor));
-
-    return FirebaseFirestore.instance
-        .collection('wallets')
-        .doc(wId)
-        .collection('receipts')
-        .where('userId', isEqualTo: uid)
-        .where('date_of_purchase', isGreaterThanOrEqualTo: start)
-        .where('date_of_purchase', isLessThan: nextStart) // exclusive upper bound
-        .orderBy('date_of_purchase', descending: true)
-        .orderBy('created_at', descending: true) // tie-breaker for same day
-        .snapshots();
-  }
-
-  /// Shared (all members) under /wallets/{wId}/receipts for the selected month (scoped by wallet + anchor day)
-  Stream<QuerySnapshot<Map<String, dynamic>>> streamMonthForWallet() {
+  /// Shared (all members) under /wallets/{wId}/receipts for the selected month.
+  /// If [visibility] is provided, filter by it (e.g., 'shared').
+  Stream<QuerySnapshot<Map<String, dynamic>>> streamMonthForWallet({String? visibility}) {
     final wId = walletId.value ??
         (Get.isRegistered<WalletController>() ? Get.find<WalletController>().walletId.value : null);
     if (wId == null) return const Stream.empty();
@@ -358,14 +333,22 @@ pendingExpenses.assignAll(pending);
     final start = Timestamp.fromDate(startOfBudgetPeriod(year, monthNum, anchor));
     final nextStart = Timestamp.fromDate(nextStartOfBudgetPeriod(year, monthNum, anchor));
 
-    return FirebaseFirestore.instance
+    Query<Map<String, dynamic>> q = FirebaseFirestore.instance
         .collection('wallets')
         .doc(wId)
         .collection('receipts')
         .where('date_of_purchase', isGreaterThanOrEqualTo: start)
-        .where('date_of_purchase', isLessThan: nextStart) // exclusive upper bound
+        .where('date_of_purchase', isLessThan: nextStart);
+
+    if (visibility != null) {
+      q = q.where('visibility', isEqualTo: visibility);
+    } else {
+      q = q.where('visibility', whereIn: ['private', 'shared']);
+    }
+
+    return q
         .orderBy('date_of_purchase', descending: true)
-        .orderBy('created_at', descending: true) // tie-breaker for same day
+        .orderBy('created_at', descending: true)
         .snapshots();
   }
 
@@ -441,7 +424,6 @@ pendingExpenses.assignAll(pending);
 
       await ref.update(update);
       lastSuccess.value = 'Updated.';
-      // optional cache bump
       final key = '${selectedMonth.value}-${selectedYear.value}';
       invalidationCounters[key] = (invalidationCounters[key] ?? 0) + 1;
     } catch (e) {

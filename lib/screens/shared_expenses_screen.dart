@@ -1,19 +1,41 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:couple_expenses/controllers/expense_summary_controller.dart';
 import 'package:couple_expenses/controllers/expenses_controller.dart';
+import 'package:couple_expenses/controllers/mic_controller.dart';
 import 'package:couple_expenses/controllers/wallet_controller.dart';
 import 'package:couple_expenses/screens/settings_screen.dart';
 import 'package:couple_expenses/utils/date_utils_ext.dart';
 import 'package:couple_expenses/widgets/expense_summary_card.dart';
+import 'package:couple_expenses/widgets/home_screen_widgets/recording_section.dart';
+import 'package:couple_expenses/widgets/home_screen_widgets/successpop.dart';
 import 'package:couple_expenses/widgets/month_picker.dart';
 import 'package:couple_expenses/widgets/expenses/category_icon.dart';
+import 'package:couple_expenses/widgets/shared_expense_widgets/review_shared_add_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:intl/intl.dart';
 import 'package:sizer/sizer.dart';
 
-class SharedExpensesScreen extends StatelessWidget {
-  SharedExpensesScreen({super.key});
+class SharedExpensesScreen extends StatefulWidget {
+  const SharedExpensesScreen({super.key});
+
+  @override
+  State<SharedExpensesScreen> createState() => _SharedExpensesScreenState();
+}
+
+class _SharedExpensesScreenState extends State<SharedExpensesScreen> {
+  // Expenses controller for shared view
+  late final ExpensesController c;
+
+  // Filter state - tracks which member UIDs are selected
+  final RxSet<String> selectedMemberIds = <String>{}.obs;
+
+  late final WalletController wc;
+  late final MicController mic;
+
+  // success popup
+  final RxInt _savedCount = 0.obs;
+  final RxBool _showSuccess = false.obs;
 
   // --- name formatting: "First L"
   String _shortName(String? full) {
@@ -21,32 +43,24 @@ class SharedExpensesScreen extends StatelessWidget {
     final t = full.trim();
     if (t.isEmpty) return 'Member';
     final parts = t.split(RegExp(r'\s+'));
-    if (parts.length == 1) return parts.first; // "Abdelaziz"
+    if (parts.length == 1) return parts.first;
     final first = parts.first;
     final lastInitial = parts.last.isNotEmpty ? parts.last[0].toUpperCase() : '';
-    return lastInitial.isEmpty ? first : '$first $lastInitial'; // "Abdelaziz N"
+    return lastInitial.isEmpty ? first : '$first $lastInitial';
   }
 
-  // Expenses controller for shared view
-  final ExpensesController c = (() {
-    if (!Get.isRegistered<ExpensesController>(tag: 'shared')) {
-      return Get.put(
-        ExpensesController(collectionName: 'receipts'),
-        tag: 'shared',
-      );
-    }
-    return Get.find<ExpensesController>(tag: 'shared');
-  })();
-
-  // Filter state - tracks which member UIDs are selected
-  final RxSet<String> selectedMemberIds = <String>{}.obs;
-
   @override
-  Widget build(BuildContext context) {
-    final WalletController wc = Get.find<WalletController>();
-    final w = MediaQuery.of(context).size.width;
+  void initState() {
+    super.initState();
 
-    // Initialize shared expense summary controller
+    wc = Get.find<WalletController>();
+
+    if (!Get.isRegistered<ExpensesController>(tag: 'shared')) {
+      c = Get.put(ExpensesController(collectionName: 'receipts'), tag: 'shared');
+    } else {
+      c = Get.find<ExpensesController>(tag: 'shared');
+    }
+
     if (!Get.isRegistered<ExpenseSummaryController>(tag: 'shared')) {
       Get.put(
         ExpenseSummaryController(expensesTag: 'shared', isSharedView: true),
@@ -54,8 +68,14 @@ class SharedExpensesScreen extends StatelessWidget {
       );
     }
 
+    mic = Get.isRegistered<MicController>() ? Get.find<MicController>() : Get.put(MicController());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final w = MediaQuery.of(context).size.width;
+
     return Obx(() {
-      // Loading state
       if (wc.walletId.value == null || wc.loading.value) {
         return Scaffold(
           backgroundColor: Colors.grey.shade50,
@@ -95,7 +115,6 @@ class SharedExpensesScreen extends StatelessWidget {
 
       final memberMap = {for (final m in wc.members) m.uid: _shortName(m.name)};
 
-      // Initialize selectedMemberIds with all members if empty
       if (selectedMemberIds.isEmpty && wc.members.isNotEmpty) {
         selectedMemberIds.addAll(wc.members.map((m) => m.uid));
       }
@@ -122,19 +141,31 @@ class SharedExpensesScreen extends StatelessWidget {
             ),
           ],
         ),
-        body: SafeArea(
-          child: Column(
-            children: [
-              SizedBox(height: 0.5.h),
-              _buildEnhancedSummaryCard(),
-              _buildInteractivePeriodInfo(),
-              _buildMembersInfo(wc.members, memberMap),
-              _buildErrorMessage(wc),
-              SizedBox(height: 0.5.h),
-              Expanded(child: _buildExpensesList(memberMap: memberMap, isWide: w >= 600)),
-            ],
-          ),
+        body: Stack(
+          children: [
+            SafeArea(
+              child: Column(
+                children: [
+                  SizedBox(height: 0.5.h),
+                  _buildEnhancedSummaryCard(),
+                  _buildInteractivePeriodInfo(),
+                  _buildMembersInfo(wc.members, memberMap),
+                  _buildErrorMessage(wc),
+                  SizedBox(height: 0.5.h),
+                  Expanded(child: _buildExpensesList(memberMap: memberMap, isWide: w >= 600)),
+                ],
+              ),
+            ),
+            const RecordingSection(),
+            Obx(() => _showSuccess.value
+                ? SuccessPopUp(
+                    savedCount: _savedCount.value,
+                    contextLabel: 'Shared Expenses',
+                  )
+                : const SizedBox.shrink()),
+          ],
         ),
+        floatingActionButton: _buildSharedFAB(),
       );
     });
   }
@@ -312,18 +343,15 @@ class SharedExpensesScreen extends StatelessWidget {
               spacing: 2.w,
               runSpacing: 1.h,
               children: [
-                // "All" button
                 _buildFilterChip(
                   label: 'All',
                   isSelected: selectedMemberIds.length == members.length,
                   onTap: () {
-                    // Select all members
                     selectedMemberIds.clear();
                     selectedMemberIds.addAll(members.map((m) => m.uid));
                   },
                   color: Colors.blue,
                 ),
-                // Individual member buttons
                 ...members.map((member) {
                   final isSelected =
                       selectedMemberIds.length == 1 && selectedMemberIds.contains(member.uid);
@@ -331,7 +359,6 @@ class SharedExpensesScreen extends StatelessWidget {
                     label: _shortName(member.name),
                     isSelected: isSelected,
                     onTap: () {
-                      // Select only this member
                       selectedMemberIds.clear();
                       selectedMemberIds.add(member.uid);
                     },
@@ -474,7 +501,7 @@ class SharedExpensesScreen extends StatelessWidget {
     required bool isWide,
   }) {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: c.streamMonthForWallet(),
+      stream: c.streamMonthForWallet(visibility: 'shared'),
       builder: (context, snap) {
         if (snap.hasError) {
           return _buildErrorState(snap.error.toString());
@@ -486,7 +513,6 @@ class SharedExpensesScreen extends StatelessWidget {
 
         final docs = snap.data!.docs;
 
-        // Filter docs based on selected members
         final filteredDocs = selectedMemberIds.isEmpty
             ? docs
             : docs.where((doc) {
@@ -494,7 +520,6 @@ class SharedExpensesScreen extends StatelessWidget {
                 return userId != null && selectedMemberIds.contains(userId);
               }).toList();
 
-        // --- Newest first: created_at → created_at_client → date_of_purchase
         DateTime _tsOf(QueryDocumentSnapshot<Map<String, dynamic>> d) {
           final m = d.data();
           final created = m['created_at'];
@@ -756,6 +781,70 @@ class SharedExpensesScreen extends StatelessWidget {
             ],
           ),
         ),
+      );
+    });
+  }
+
+  Widget _buildSharedFAB() {
+    return Obx(() {
+      final mic = Get.find<MicController>();
+      final rec = mic.isRecording.value;
+      final busy = mic.isProcessing.value;
+
+      final child = busy
+          ? const SizedBox(
+              width: 28,
+              height: 28,
+              child: CircularProgressIndicator(strokeWidth: 3, valueColor: AlwaysStoppedAnimation<Color>(Colors.white)),
+            )
+          : Icon(rec ? Icons.stop_rounded : Icons.mic_none_rounded);
+
+Future<void> _handlePress() async {
+  if (!rec) {
+    mic.target = MicTarget.shared; // save intent = shared
+    await mic.startRecording();
+  } else {
+    final result = await mic.stopRecordingAndParse();
+    if (!mounted) return;
+
+    if (result != null && result.expenses.isNotEmpty) {
+      // 1) Ask the user
+   final review = await showReviewSharedAddDialog(
+  context: context,
+  parsedItems: result.expenses,
+);
+
+      if (review == null) {
+        // user cancelled; do nothing
+        return;
+      }
+int totalSaved = 0;
+totalSaved += await c.saveParsedExpenses(items: result.expenses, shared: true);
+
+// Optionally save chosen ones to Private
+if (review.selectedPrivateItems.isNotEmpty) {
+  totalSaved += await c.saveParsedExpenses(
+    items: review.selectedPrivateItems,
+    shared: false,
+  );
+}
+
+_savedCount.value = totalSaved;
+_showSuccess.value = true;
+Future.delayed(const Duration(seconds: 3), () {
+  if (mounted) _showSuccess.value = false;
+});
+    }
+  }
+}
+
+
+      return FloatingActionButton.extended(
+        onPressed: busy ? null : _handlePress,
+        backgroundColor: rec ? Colors.red.shade500 : Colors.blue.shade700,
+        foregroundColor: Colors.white,
+        icon: child,
+        label: Text(rec ? 'Stop & add' : 'Add shared expense'),
       );
     });
   }

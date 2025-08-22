@@ -1,4 +1,3 @@
-// lib/controllers/expense_summary_controller.dart
 import 'dart:developer';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -10,8 +9,8 @@ import 'wallet_controller.dart';
 import 'expenses_controller.dart';
 import '../utils/date_utils_ext.dart';
 
-/// Handles both "my" and "shared" summaries,
-/// uses the same rolling period as ExpensesController:
+/// Handles both "my" and "shared" summaries.
+/// Uses the same rolling period as ExpensesController:
 /// [startOfBudgetPeriod(year, month, anchor) .. nextStartOfBudgetPeriod)
 class ExpenseSummaryController extends GetxController {
   ExpenseSummaryController({
@@ -56,7 +55,7 @@ class ExpenseSummaryController extends GetxController {
     super.onInit();
     log('📊 ExpenseSummaryController onInit - tag: $expensesTag, shared: $isSharedView');
 
-    _expenses = Get.find<ExpensesController>(tag: expensesTag);
+_expenses = Get.find<ExpensesController>(tag: expensesTag);
     _wallet = Get.find<WalletController>();
 
     // Initial bindings
@@ -68,7 +67,6 @@ class ExpenseSummaryController extends GetxController {
       [_expenses.selectedMonth, _expenses.selectedYear, _expenses.budgetAnchorDay],
       (_) {
         _bindTotals();
-        // Budget amount stays keyed by label month, but we still re-bind so UI is fresh
         _bindBudget();
       },
     );
@@ -84,17 +82,23 @@ class ExpenseSummaryController extends GetxController {
     log('📊 Binding totals for $expensesTag (shared: $isSharedView)');
 
     // Choose the right stream based on view type
-    final stream = isSharedView
-        ? _expenses.streamMonthForWallet() // All expenses in wallet
-        : _expenses.streamMyMonthInWallet(); // Only current user's expenses
+  final stream = isSharedView
+    ? _expenses.streamMonthForWallet(visibility: 'shared')
+    : _expenses.streamMyMonthInWallet(includeShared: false); // ← private only
 
     final totalStream = stream.map((snapshot) {
       double sum = 0.0;
       for (final doc in snapshot.docs) {
         final data = doc.data();
-        final prices = (data['unit_price'] as List?)?.cast<num>() ?? <num>[];
-        for (final price in prices) {
-          sum += price.toDouble();
+
+        // Support both list and scalar legacy schema
+        final pricesAny = data['unit_price'];
+        if (pricesAny is List) {
+          for (final n in pricesAny.cast<num>()) {
+            sum += n.toDouble();
+          }
+        } else if (pricesAny is num) {
+          sum += pricesAny.toDouble();
         }
       }
       log('📊 Calculated total for $expensesTag: $sum');
