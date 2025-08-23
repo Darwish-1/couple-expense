@@ -1,15 +1,20 @@
+// lib/screens/my_expenses_screen.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:couple_expenses/controllers/expense_summary_controller.dart';
+import 'package:couple_expenses/controllers/tutorial_coordinator.dart';
 import 'package:couple_expenses/screens/settings_screen.dart';
+import 'package:couple_expenses/services/first_run_tutorial.dart';
 import 'package:couple_expenses/widgets/expense_summary_card.dart';
 import 'package:couple_expenses/widgets/expenses/category_icon.dart';
 import 'package:couple_expenses/widgets/expenses/receipt_actions.dart';
 import 'package:couple_expenses/widgets/home_screen_widgets/recording_section.dart';
 import 'package:couple_expenses/widgets/home_screen_widgets/successpop.dart';
+import 'package:couple_expenses/widgets/wallet_setup_loading.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:intl/intl.dart';
 import 'package:sizer/sizer.dart';
+import 'package:tutorial_coach_mark/tutorial_coach_mark.dart';
 
 import '../controllers/expenses_controller.dart';
 import '../controllers/mic_controller.dart';
@@ -28,6 +33,15 @@ class _MyExpensesScreenState extends State<MyExpensesScreen> {
   late final ExpensesController c;
   late final WalletController wc;
   late final MicController mic;
+  Worker? _tutorialWorker; // NEW
+
+  // --- CoachMark targets
+  final _kSummary = GlobalKey();
+  final _kPeriod = GlobalKey();
+  final _kFab = GlobalKey();
+
+  bool _tutorialShownOnce = false;
+  int _tutorialTries = 0;
 
   // Success popup state
   final RxInt _savedCount = 0.obs;
@@ -55,49 +69,309 @@ class _MyExpensesScreenState extends State<MyExpensesScreen> {
       );
     }
 
-    mic = Get.isRegistered<MicController>() ? Get.find<MicController>() : Get.put(MicController());
+    mic = Get.isRegistered<MicController>()
+        ? Get.find<MicController>()
+        : Get.put(MicController());
+
+    // show tutorial after first frame
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _maybeShowFirstRunTutorial(),
+    );
+    _tutorialWorker = everAll([wc.walletId, wc.loading], (_) {
+      if (!_tutorialShownOnce &&
+          mounted &&
+          wc.walletId.value != null &&
+          wc.loading.value == false) {
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => _maybeShowFirstRunTutorial(),
+        );
+      }
+    });
   }
 
   @override
-  void dispose() {
-    // keep MicController alive for shared screen too
-    super.dispose();
+void dispose() {
+  _tutorialWorker?.dispose();
+  if (c.micActive.value) c.stopMic(); // ensure unlock
+  super.dispose();
+}
+
+  // ===================== First-run Tutorial =====================
+
+  // Updated MyExpensesScreen tutorial logic
+
+  Future<void> _maybeShowFirstRunTutorial() async {
+    debugPrint('_maybeShowFirstRunTutorial: Starting check...');
+
+    // Don’t double-run or run on dead widgets
+    if (_tutorialShownOnce || !mounted) {
+      debugPrint(
+        '_maybeShowFirstRunTutorial: Early return - tutorialShownOnce: $_tutorialShownOnce, mounted: $mounted',
+      );
+      return;
+    }
+
+    // Wait until the wallet is actually ready; your Worker in initState will re-trigger this.
+    if (wc.walletId.value == null || wc.loading.value) {
+      debugPrint(
+        '_maybeShowFirstRunTutorial: Wallet not ready (walletId=${wc.walletId.value}, loading=${wc.loading.value}). Will retry when ready.',
+      );
+      return;
+    }
+
+    // Debug current tutorial state
+    final debugState = await FirstRunTutorial.getDebugState();
+    debugPrint('_maybeShowFirstRunTutorial: Current state = $debugState');
+
+    // Check if the OVERALL tutorial sequence should run and if "My" should run
+    final shouldShowOverall = await FirstRunTutorial.shouldShow();
+    final shouldShowMyExpenses = await FirstRunTutorial.shouldShowMyExpenses();
+    debugPrint(
+      '_maybeShowFirstRunTutorial: shouldShowOverall = $shouldShowOverall, shouldShowMyExpenses = $shouldShowMyExpenses',
+    );
+
+    // If either says "do not show", bail (nothing to do)
+    if (!shouldShowOverall || !shouldShowMyExpenses) {
+      _tutorialShownOnce = true;
+      debugPrint(
+        '_maybeShowFirstRunTutorial: Nothing to show (flags say completed), returning',
+      );
+      return;
+    }
+
+    // Start/continue the sequence
+    final coordinator = TutorialCoordinator.instance;
+    if (!coordinator.isTutorialActive) {
+      coordinator.startTutorialSequence();
+    }
+
+    // Give layout one frame before we start polling
+    await WidgetsBinding.instance.endOfFrame;
+
+    // Wait for the actual RenderObjects of the targets to exist.
+    // Use endOfFrame to avoid racing the build/layout passes that happen while wallet is created.
+    final deadline = DateTime.now().add(const Duration(seconds: 8));
+    var tries = 0;
+    while (mounted &&
+        DateTime.now().isBefore(deadline) &&
+        (_kSummary.currentContext == null ||
+            _kPeriod.currentContext == null ||
+            _kFab.currentContext == null)) {
+      tries++;
+      debugPrint(
+        '_maybeShowFirstRunTutorial: Waiting for contexts, try $tries',
+      );
+      await WidgetsBinding.instance.endOfFrame;
+      await Future.delayed(const Duration(milliseconds: 50));
+    }
+
+    // If any target is still missing, stop now — the Worker you added will call us again
+    if (_kSummary.currentContext == null ||
+        _kPeriod.currentContext == null ||
+        _kFab.currentContext == null) {
+      debugPrint(
+        '_maybeShowFirstRunTutorial: Targets still missing after wait; will retry on next wallet/tab change.',
+      );
+      return;
+    }
+
+    debugPrint(
+      '_maybeShowFirstRunTutorial: All contexts available, showing tutorial',
+    );
+
+    final tutorial = TutorialCoachMark(
+      targets:
+          _buildTutorialTargets(), // your existing builder (summary, period, fab)
+      colorShadow: Colors.black,
+      opacityShadow: 0.85,
+      pulseEnable: false,
+      hideSkip: false,
+      textSkip: "Skip Tutorial",
+      onFinish: () async {
+        debugPrint(
+          '_maybeShowFirstRunTutorial: My Expenses tutorial finished, going to wallet',
+        );
+        await TutorialCoordinator.instance
+            .navigateToWalletWithTutorial(); // 👈 changed
+      },
+      onSkip: () {
+        debugPrint('_maybeShowFirstRunTutorial: Tutorial skipped');
+        FirstRunTutorial.markSeen(); // mark entire sequence as seen
+        TutorialCoordinator.instance.completeTutorial();
+        return true;
+      },
+    );
+
+    tutorial.show(context: context);
+    _tutorialShownOnce = true;
+    debugPrint('_maybeShowFirstRunTutorial: Tutorial shown');
   }
+
+  List<TargetFocus> _buildTutorialTargets() {
+    return [
+      TargetFocus(
+        identify: "summary",
+        keyTarget: _kSummary,
+        shape: ShapeLightFocus.RRect,
+        radius: 12,
+        contents: [
+          TargetContent(
+            align: ContentAlign.bottom,
+            builder: (_, controller) => _tip(
+              title: "Your totals",
+              body: "See your spending summary for this period.",
+              onNext: controller.next,
+              onSkip: controller.skip,
+              isLast: false,
+              stepInfo: "Step 1 of 6", // Update step info
+            ),
+          ),
+        ],
+      ),
+      TargetFocus(
+        identify: "period",
+        keyTarget: _kPeriod,
+        shape: ShapeLightFocus.RRect,
+        radius: 12,
+        contents: [
+          TargetContent(
+            align: ContentAlign.top,
+            builder: (_, controller) => _tip(
+              title: "Budget period",
+              body: "Tap to change the month or start day.",
+              onNext: controller.next,
+              onSkip: controller.skip,
+              isLast: false,
+              stepInfo: "Step 2 of 6",
+            ),
+          ),
+        ],
+      ),
+      TargetFocus(
+        identify: "fab",
+        keyTarget: _kFab,
+        shape: ShapeLightFocus.Circle,
+        contents: [
+          TargetContent(
+            align: ContentAlign.top,
+            builder: (_, controller) => _tip(
+              title: "Add by voice",
+              body:
+                  "Tap the mic to add expenses.\n\nNext: Let's explore the Wallets!",
+              onNext: controller.next,
+              onSkip: controller.skip,
+              isLast: true,
+              stepInfo: "Step 3 of 6",
+              nextButtonText: "Continue →", // Custom button text
+            ),
+          ),
+        ],
+      ),
+    ];
+  }
+
+  Widget _tip({
+    required String title,
+    required String body,
+    required VoidCallback onNext,
+    required VoidCallback onSkip,
+    required bool isLast,
+    String? stepInfo,
+    String? nextButtonText,
+  }) {
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 320),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 10)],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Step indicator
+          if (stepInfo != null) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.blue.shade50,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                stepInfo,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.blue.shade700,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+          Text(
+            title,
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 8),
+          Text(body, style: const TextStyle(fontSize: 14, height: 1.4)),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              TextButton(
+                onPressed: onSkip,
+                child: Text(isLast ? "Skip Tutorial" : "Skip"),
+              ),
+              const Spacer(),
+              ElevatedButton(
+                onPressed: onNext,
+                child: Text(nextButtonText ?? (isLast ? "Continue" : "Next")),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ===================== UI =====================
 
   @override
   Widget build(BuildContext context) {
     final w = MediaQuery.of(context).size.width;
     final isWide = w >= 600;
 
-    return Scaffold(
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      appBar: AppBar(
-        elevation: 0,
-        backgroundColor: const Color.fromRGBO(250, 247, 240, 1),
-        foregroundColor: Theme.of(context).colorScheme.onSurface,
-        title: Text(
-          'My Expenses',
-          style: TextStyle(fontWeight: FontWeight.w600, fontSize: 18.sp),
+ return Obx(() => PopScope(
+  canPop: !mic.isRecording.value, // block back while recording
+  child: Scaffold(
+    backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+    appBar: AppBar(
+      elevation: 0,
+      backgroundColor: const Color.fromRGBO(250, 247, 240, 1),
+      foregroundColor: Theme.of(context).colorScheme.onSurface,
+      title: Text('My Expenses', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 18.sp)),
+      actions: [
+        IconButton(
+          icon: Icon(Icons.settings, size: 20.sp),
+          onPressed: mic.isRecording.value ? null : () => Get.to(() => const SettingsScreen()),
         ),
-        actions: [
-          IconButton(
-            icon: Icon(Icons.settings, size: 20.sp),
-            onPressed: () => Get.to(() => const SettingsScreen()),
-          ),
-        ],
-      ),
-      body: Stack(
-        children: [
-          // Main content
-          SafeArea(
+      ],
+    ),
+    body: Stack(
+      children: [
+        // ✳️ Block touches to content while mic is active
+        Obx(() => IgnorePointer(
+          ignoring: mic.isRecording.value || mic.isProcessing.value,
+          child: SafeArea(
             child: Obx(() {
-              if (wc.walletId.value == null || wc.loading.value) {
+              if (wc.walletId.value == null || wc.loading.value || wc.joining.value || !wc.isMember.value) {
                 return _buildMainLoadingState();
               }
               return Column(
                 children: [
                   SizedBox(height: 2.h),
-                  const _EnhancedSummaryCard(),   // my summary (private + my shared)
+                  _EnhancedSummaryCard(targetKey: _kSummary),
                   _buildInteractivePeriodInfo(),
                   _buildErrorMessage(),
                   SizedBox(height: 1.h),
@@ -106,51 +380,41 @@ class _MyExpensesScreenState extends State<MyExpensesScreen> {
               );
             }),
           ),
+        )),
 
-          // Mic overlay + success popup
-          const RecordingSection(),
-          Obx(() => _showSuccess.value
-              ? SuccessPopUp(
-                  savedCount: _savedCount.value,
-                  contextLabel: 'My Expenses',
-                )
-              : const SizedBox.shrink()),
-        ],
-      ),
-      floatingActionButton: _buildEnhancedFAB(isWide: isWide),
-    );
+        // (Optional) visual scrim that DOES NOT eat taps (FAB stays tappable)
+        Obx(() => (mic.isRecording.value || mic.isProcessing.value)
+            ? IgnorePointer(
+                ignoring: true, // important: visual only
+                child: Container(color: Colors.black.withOpacity(0.35)),
+              )
+            : const SizedBox.shrink()),
+
+        // Mic overlay UI (your waveform / timer etc.)
+        const RecordingSection(),
+
+        // Success popup
+        Obx(() => _showSuccess.value
+            ? SuccessPopUp(savedCount: _savedCount.value, contextLabel: 'My Expenses')
+            : const SizedBox.shrink()),
+      ],
+    ),
+    floatingActionButton: _buildEnhancedFAB(isWide: isWide), // FAB remains on top and tappable
+  ),
+));
+
+
   }
 
   Widget _buildMainLoadingState() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Container(
-            padding: EdgeInsets.all(6.w),
-            decoration: BoxDecoration(
-              color: Theme.of(context).cardColor,
-              shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.grey.withOpacity(0.1),
-                  spreadRadius: 2.w,
-                  blurRadius: 5.w,
-                ),
-              ],
-            ),
-            child: const CircularProgressIndicator(strokeWidth: 3),
-          ),
-          SizedBox(height: 3.h),
-          Text(
-            'Setting up your expenses...',
-            style: TextStyle(
-              fontSize: 11.sp,
-              color: Colors.grey.shade700,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ],
+    return const Center(
+      child: WalletSetupLoading(
+        size: 160,
+        label: 'Setting up your expenses...',
+        labelStyle: TextStyle(
+          fontSize: 14, // Adjust as needed for your design
+          fontWeight: FontWeight.w500,
+        ),
       ),
     );
   }
@@ -167,9 +431,11 @@ class _MyExpensesScreenState extends State<MyExpensesScreen> {
 
       return GestureDetector(
         onTap: () {
+           if (c.micActive.value) return; // 🔒 block while recording
           showMonthPickerDialog(context, 'my', allowAnchorEdit: true);
         },
         child: Container(
+          key: _kPeriod, // 👈 coachmark target lives on the RenderObject
           margin: EdgeInsets.symmetric(horizontal: 3.w, vertical: 1.h),
           padding: EdgeInsets.symmetric(horizontal: 3.w, vertical: 1.2.h),
           decoration: BoxDecoration(
@@ -300,11 +566,7 @@ class _MyExpensesScreenState extends State<MyExpensesScreen> {
             ),
             IconButton(
               onPressed: () => wc.errorMessage.value = '',
-              icon: Icon(
-                Icons.close,
-                size: 12.sp,
-                color: Colors.red.shade700,
-              ),
+              icon: Icon(Icons.close, size: 12.sp, color: Colors.red.shade700),
               style: IconButton.styleFrom(
                 backgroundColor: Colors.red.shade100,
                 shape: const CircleBorder(),
@@ -319,13 +581,12 @@ class _MyExpensesScreenState extends State<MyExpensesScreen> {
 
   Widget _buildExpensesList({required bool isWide}) {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-  stream: c.streamMyMonthInWallet(includeShared: false), // ← only PRIVATE
+      stream: c.streamMyMonthInWallet(), // default = private only
       builder: (context, snap) {
         if (snap.hasError) {
           return _buildErrorState(snap.error.toString());
         }
 
-        // Show skeleton loading instead of spinner while stream loads
         if (!snap.hasData) {
           return _buildSkeletonLoading();
         }
@@ -346,10 +607,14 @@ class _MyExpensesScreenState extends State<MyExpensesScreen> {
           return DateTime.fromMillisecondsSinceEpoch(0);
         }
 
-        final sortedDocs = List.of(docs)..sort((a, b) => _tsOf(b).compareTo(_tsOf(a)));
+        final sortedDocs = List.of(docs)
+          ..sort((a, b) => _tsOf(b).compareTo(_tsOf(a)));
         final useGrid = MediaQuery.of(context).size.width >= 900;
         final cardPadding = EdgeInsets.all(3.5.w);
-        final containerMargin = EdgeInsets.symmetric(horizontal: 3.w, vertical: 1.h);
+        final containerMargin = EdgeInsets.symmetric(
+          horizontal: 3.w,
+          vertical: 1.h,
+        );
 
         final listChild = useGrid
             ? GridView.builder(
@@ -587,17 +852,17 @@ class _MyExpensesScreenState extends State<MyExpensesScreen> {
             Text(
               'Error Loading Expenses',
               style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w600,
-                    fontSize: 13.sp,
-                  ),
+                fontWeight: FontWeight.w600,
+                fontSize: 13.sp,
+              ),
             ),
             SizedBox(height: 1.h),
             Text(
               error,
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Colors.grey.shade600,
-                    fontSize: 10.5.sp,
-                  ),
+                color: Colors.grey.shade600,
+                fontSize: 10.5.sp,
+              ),
               textAlign: TextAlign.center,
             ),
             SizedBox(height: 2.4.h),
@@ -655,19 +920,19 @@ class _MyExpensesScreenState extends State<MyExpensesScreen> {
             Text(
               'No expenses yet',
               style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    color: Colors.grey.shade800,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 20.sp,
-                  ),
+                color: Colors.grey.shade800,
+                fontWeight: FontWeight.w600,
+                fontSize: 20.sp,
+              ),
             ),
             SizedBox(height: 1.2.h),
             Text(
               'Tap the mic button below to add your first expense by voice, or use the menu to add manually.',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Colors.grey.shade600,
-                    height: 1.5,
-                    fontSize: 14.sp,
-                  ),
+                color: Colors.grey.shade600,
+                height: 1.5,
+                fontSize: 14.sp,
+              ),
               textAlign: TextAlign.center,
             ),
             SizedBox(height: 2.4.h),
@@ -680,11 +945,7 @@ class _MyExpensesScreenState extends State<MyExpensesScreen> {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(
-                    Icons.mic,
-                    size: 12.sp,
-                    color: Colors.blue.shade600,
-                  ),
+                  Icon(Icons.mic, size: 12.sp, color: Colors.blue.shade600),
                   SizedBox(width: 2.w),
                   Text(
                     'Try: "I spent 25 dollars on groceries"',
@@ -717,31 +978,39 @@ class _MyExpensesScreenState extends State<MyExpensesScreen> {
                 valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
               ),
             )
-          : Icon(
-              rec ? Icons.stop_rounded : Icons.mic_rounded,
-              size: 16.sp,
-            );
+          : Icon(rec ? Icons.stop_rounded : Icons.mic_rounded, size: 16.sp);
 
-      Future<void> _handlePress() async {
-        if (!rec) {
-          mic.target = MicTarget.my; // 👈 save as PRIVATE by default in My screen
-          await mic.startRecording();
-        } else {
-          final result = await mic.stopRecordingAndParse();
-          if (!mounted) return;
-          if (result != null && result.expenses.isNotEmpty) {
-            final n = await c.saveParsedExpenses(items: result.expenses, shared: false);
-            _savedCount.value = n;
-            _showSuccess.value = true;
-            Future.delayed(const Duration(seconds: 3), () {
-              if (mounted) _showSuccess.value = false;
-            });
-          }
-        }
+    Future<void> _handlePress() async {
+  final rec = mic.isRecording.value;
+
+  if (!rec) {
+    // START recording
+    c.startMic();                       // 👈 mark “locked”
+    mic.target = MicTarget.my;          // save as PRIVATE in My screen
+    await mic.startRecording();
+  } else {
+    // STOP recording & parse
+    final result = await mic.stopRecordingAndParse();
+    // Always clear the lock, even on errors or empty parse
+    try {
+      if (!mounted) return;
+      if (result != null && result.expenses.isNotEmpty) {
+        final n = await c.saveParsedExpenses(items: result.expenses, shared: false);
+        _savedCount.value = n;
+        _showSuccess.value = true;
+        Future.delayed(const Duration(seconds: 3), () {
+          if (mounted) _showSuccess.value = false;
+        });
       }
-
+    } finally {
+      c.stopMic();                      // 👈 unlock navigation/taps
+    }
+  }
+}
       return isWide
           ? FloatingActionButton.large(
+              key: _kFab,
+              heroTag: 'fab-my', // 👈 unique tag
               tooltip: rec ? 'Stop & add' : 'Add by voice',
               backgroundColor: rec ? Colors.red.shade500 : Colors.blue.shade600,
               foregroundColor: Theme.of(context).colorScheme.surface,
@@ -750,6 +1019,8 @@ class _MyExpensesScreenState extends State<MyExpensesScreen> {
               child: child,
             )
           : FloatingActionButton(
+              key: _kFab,
+              heroTag: 'fab-my', // 👈 unique tag
               tooltip: rec ? 'Stop & add' : 'Add by voice',
               backgroundColor: rec ? Colors.red.shade500 : Colors.blue.shade600,
               foregroundColor: Theme.of(context).colorScheme.surface,
@@ -762,11 +1033,13 @@ class _MyExpensesScreenState extends State<MyExpensesScreen> {
 }
 
 class _EnhancedSummaryCard extends StatelessWidget {
-  const _EnhancedSummaryCard();
+  final GlobalKey? targetKey;
+  const _EnhancedSummaryCard({Key? key, this.targetKey}) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
     return Container(
+      key: targetKey, // attach the coachmark key to the RenderObject
       margin: EdgeInsets.symmetric(horizontal: 3.w),
       child: const ExpenseSummaryCard(
         summaryTag: 'my',
@@ -810,7 +1083,9 @@ class _EnhancedExpenseListItem extends StatelessWidget {
       background: Container(
         margin: EdgeInsets.symmetric(vertical: 0.8.h),
         decoration: BoxDecoration(
-          gradient: LinearGradient(colors: [Colors.red.shade400, Colors.red.shade600]),
+          gradient: LinearGradient(
+            colors: [Colors.red.shade400, Colors.red.shade600],
+          ),
           borderRadius: BorderRadius.circular(4.w),
         ),
         alignment: Alignment.centerRight,
@@ -818,10 +1093,20 @@ class _EnhancedExpenseListItem extends StatelessWidget {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.end,
           children: [
-            Text('Delete',
-                style: TextStyle(color: Theme.of(context).colorScheme.surface, fontWeight: FontWeight.bold, fontSize: 11.sp)),
+            Text(
+              'Delete',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.surface,
+                fontWeight: FontWeight.bold,
+                fontSize: 11.sp,
+              ),
+            ),
             SizedBox(width: 3.w),
-            Icon(Icons.delete_sweep_rounded, color: Theme.of(context).colorScheme.surface, size: 16.sp),
+            Icon(
+              Icons.delete_sweep_rounded,
+              color: Theme.of(context).colorScheme.surface,
+              size: 16.sp,
+            ),
           ],
         ),
       ),
@@ -829,19 +1114,28 @@ class _EnhancedExpenseListItem extends StatelessWidget {
         final ok = await showDialog<bool>(
           context: context,
           builder: (ctx) => AlertDialog(
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4.w)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(4.w),
+            ),
             title: const Text('Delete Receipt?'),
-            content: const Text('This will permanently remove the selected receipt.'),
+            content: const Text(
+              'This will permanently remove the selected receipt.',
+            ),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(ctx, false),
-                child: Text('Cancel', style: TextStyle(color: Colors.grey.shade700)),
+                child: Text(
+                  'Cancel',
+                  style: TextStyle(color: Colors.grey.shade700),
+                ),
               ),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.red.shade600,
                   foregroundColor: Theme.of(context).colorScheme.surface,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(2.w)),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(2.w),
+                  ),
                 ),
                 onPressed: () => Navigator.pop(ctx, true),
                 child: const Text('Delete'),
@@ -852,6 +1146,7 @@ class _EnhancedExpenseListItem extends StatelessWidget {
         if (ok == true) await expensesController.deleteReceipt(docId);
         return false;
       },
+
       child: Container(
         margin: EdgeInsets.symmetric(vertical: 0.8.h),
         decoration: BoxDecoration(
@@ -913,7 +1208,10 @@ class _EnhancedExpenseListItem extends StatelessWidget {
                     if (date != null) ...[
                       SizedBox(height: 0.8.h),
                       Container(
-                        padding: EdgeInsets.symmetric(horizontal: 2.w, vertical: 0.6.h),
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 2.w,
+                          vertical: 0.6.h,
+                        ),
                         decoration: BoxDecoration(
                           color: Colors.grey.shade100,
                           borderRadius: BorderRadius.circular(2.5.w),
@@ -927,7 +1225,7 @@ class _EnhancedExpenseListItem extends StatelessWidget {
                           ),
                         ),
                       ),
-                    ]
+                    ],
                   ],
                 ),
               ),
@@ -937,7 +1235,10 @@ class _EnhancedExpenseListItem extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   Container(
-                    padding: EdgeInsets.symmetric(horizontal: 3.w, vertical: 0.8.h),
+                    padding: EdgeInsets.symmetric(
+                      horizontal: 3.w,
+                      vertical: 0.8.h,
+                    ),
                     decoration: BoxDecoration(
                       color: Colors.grey.shade200,
                       borderRadius: BorderRadius.circular(2.5.w),
@@ -954,7 +1255,10 @@ class _EnhancedExpenseListItem extends StatelessWidget {
                   if (items.length > 1) ...[
                     SizedBox(height: 0.5.h),
                     Container(
-                      padding: EdgeInsets.symmetric(horizontal: 1.5.w, vertical: 0.4.h),
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 1.5.w,
+                        vertical: 0.4.h,
+                      ),
                       decoration: BoxDecoration(
                         color: Colors.grey.shade200,
                         borderRadius: BorderRadius.circular(2.w),

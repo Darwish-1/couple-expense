@@ -1,5 +1,7 @@
 // lib/main.dart
 import 'package:couple_expenses/controllers/expenses_controller.dart';
+import 'package:couple_expenses/controllers/expenses_root_controller.dart';
+import 'package:couple_expenses/controllers/tutorial_coordinator.dart';
 import 'package:couple_expenses/screens/auth_gate.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -12,9 +14,6 @@ import 'package:sizer/sizer.dart';
 import 'firebase_options.dart';
 import 'controllers/auth_controller.dart';
 import 'controllers/theme_controller.dart';
-
-
-// ⬇️ add this import
 import 'theme/app_theme.dart';
 
 Future<void> main() async {
@@ -33,15 +32,18 @@ Future<void> main() async {
     'AZURE=${dotenv.env['AZURE_SPEECH_KEY']?.substring(0,6)}..., '
     'PROJ=${dotenv.env['GCP_PROJECT_ID']}',
   );
+
   // Controllers
   final assetPath = dotenv.env['GCP_SA_ASSET'];
-try {
-  final bytes = await rootBundle.load(assetPath!);
-  debugPrint('SA asset OK: $assetPath (${bytes.lengthInBytes} bytes)');
-} catch (e) {
-  debugPrint('SA asset MISSING: $assetPath -> $e');
-}
- Get.put(
+  try {
+    final bytes = await rootBundle.load(assetPath!);
+    debugPrint('SA asset OK: $assetPath (${bytes.lengthInBytes} bytes)');
+  } catch (e) {
+    debugPrint('SA asset MISSING: $assetPath -> $e');
+  }
+
+  // Core controllers
+  Get.put(
     AuthController(
       clientId: dotenv.maybeGet('GSI_CLIENT_ID'),
       serverClientId: dotenv.maybeGet('GSI_SERVER_CLIENT_ID'),
@@ -50,11 +52,15 @@ try {
   );
   Get.put(ThemeController(), permanent: true);
 
-  // ⬇️ Register ExpensesController globally so MicController can find it
+  // Register ExpensesController globally so MicController can find it
   Get.put(
     ExpensesController(collectionName: 'expenses'),
     permanent: true,
   );
+
+  // Tutorial and navigation controllers
+  Get.put(ExpensesRootController(), permanent: true);
+  Get.put(TutorialCoordinator(), permanent: true);
 
   debugPrint('Cold start: currentUser = ${FirebaseAuth.instance.currentUser?.uid}');
   runApp(const MyApp());
@@ -74,14 +80,9 @@ class MyApp extends StatelessWidget {
           return GetMaterialApp(
             title: 'Expense Tracker',
             debugShowCheckedModeBanner: false,
-
-            // ⬇️ use the global theme
             theme: AppTheme.light,
-
-            // keep dark mode toggle working; swap in a custom AppTheme.dark later if you want
             themeMode: isDark ? ThemeMode.dark : ThemeMode.light,
             darkTheme: ThemeData.dark(),
-
             home: const AuthGate(),
           );
         });
@@ -89,4 +90,3 @@ class MyApp extends StatelessWidget {
     );
   }
 }
-

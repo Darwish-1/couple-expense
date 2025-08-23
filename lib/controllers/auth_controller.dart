@@ -182,12 +182,13 @@ class AuthController extends GetxController {
     final ref = _db.collection('users').doc(u.uid);
     final snap = await ref.get();
     if (!snap.exists) {
-      await ref.set({
-        'uid': u.uid,
-        'name': u.displayName,
-        'email': u.email,
-        'joinedAt': FieldValue.serverTimestamp(),
-      });
-    }
+  await ref.set({
+    'uid': u.uid,
+    'name': u.displayName,
+    'email': u.email,
+    'joinedAt': FieldValue.serverTimestamp(),
+    'has_seen_tutorial': false, // 👈 add this
+  });
+}
   }
 }

@@ -50,83 +50,119 @@ class ExpenseSummaryController extends GetxController {
 
   String? get _walletId => _wallet.walletId.value;
 
+  bool get _canAttach =>
+      _wallet.walletId.value != null &&
+      _wallet.isMember.value == true &&
+      _wallet.joining.value == false &&
+      FirebaseAuth.instance.currentUser != null;
+
   @override
   void onInit() {
     super.onInit();
     log('📊 ExpenseSummaryController onInit - tag: $expensesTag, shared: $isSharedView');
-
-_expenses = Get.find<ExpensesController>(tag: expensesTag);
+    _expenses = Get.find<ExpensesController>(tag: expensesTag);
     _wallet = Get.find<WalletController>();
 
-    // Initial bindings
+    // Initial binds
     _bindTotals();
     _bindBudget();
 
-    // React to month/year/anchor changes
+    // Re-bind when ANY relevant state changes (wallet, membership, period)
     everAll(
-      [_expenses.selectedMonth, _expenses.selectedYear, _expenses.budgetAnchorDay],
+      [
+        _wallet.walletId,
+        _wallet.isMember,
+        _wallet.joining,
+        _expenses.selectedMonth,
+        _expenses.selectedYear,
+        _expenses.budgetAnchorDay,
+      ],
       (_) {
         _bindTotals();
         _bindBudget();
       },
     );
-
-    // React to wallet changes
-    ever(_wallet.walletId, (_) {
-      _bindTotals();
-      _bindBudget();
-    });
   }
+
+  // ---------- Totals ----------
 
   void _bindTotals() {
     log('📊 Binding totals for $expensesTag (shared: $isSharedView)');
 
+    if (!_canAttach) {
+      // Detach by binding to an empty stream and show 0 while switching/blocked.
+      totalThisMonth.value = 0.0;
+      totalThisMonth.bindStream(const Stream<double>.empty());
+      return;
+    }
+
     // Choose the right stream based on view type
-  final stream = isSharedView
-    ? _expenses.streamMonthForWallet(visibility: 'shared')
-    : _expenses.streamMyMonthInWallet(includeShared: false); // ← private only
+    final sourceStream = isSharedView
+        ? _expenses.streamMonthForWallet(visibility: 'shared')
+        : _expenses.streamMyMonthInWallet(includeShared: false); // private only
 
-    final totalStream = stream.map((snapshot) {
-      double sum = 0.0;
-      for (final doc in snapshot.docs) {
-        final data = doc.data();
-
-        // Support both list and scalar legacy schema
-        final pricesAny = data['unit_price'];
-        if (pricesAny is List) {
-          for (final n in pricesAny.cast<num>()) {
-            sum += n.toDouble();
+    // Map to a sum, and guard errors (permission-denied during transitions)
+    final totalStream = sourceStream
+        .map((snapshot) {
+          double sum = 0.0;
+          for (final doc in snapshot.docs) {
+            final data = doc.data();
+            final pricesAny = data['unit_price'];
+            if (pricesAny is List) {
+              for (final n in pricesAny.cast<num>()) {
+                sum += n.toDouble();
+              }
+            } else if (pricesAny is num) {
+              sum += pricesAny.toDouble();
+            }
           }
-        } else if (pricesAny is num) {
-          sum += pricesAny.toDouble();
-        }
-      }
-      log('📊 Calculated total for $expensesTag: $sum');
-      return sum;
-    });
+          log('📊 Calculated total for $expensesTag: $sum');
+          return sum;
+        })
+        .handleError((e, _) {
+          if (e is FirebaseException && e.code == 'permission-denied') {
+            log('⚠️ totals stream permission-denied (expected during switch)');
+            return;
+          }
+          log('🔥 totals stream error: $e');
+        });
 
     totalThisMonth.bindStream(totalStream);
   }
 
+  // ---------- Budget ----------
+
   void _bindBudget() async {
-    final wId = _walletId;
-    if (wId == null) {
-      budgetThisMonth.value = 0.0;
+    final mk = monthKey;
+
+    // Load cached value immediately for snappy UI
+    await _loadBudgetFromCache(mk);
+
+    if (!_canAttach) {
+      // Stop listening while we don’t have permission
+      budgetThisMonth.bindStream(const Stream<double>.empty());
       return;
     }
 
-    final mk = monthKey;
-
-    // load any cached value immediately for snappy UI
-    await _loadBudgetFromCache(mk);
-
-    // live Firestore binding
     final docRef = _budgetDoc(mk);
-    budgetThisMonth.bindStream(docRef.snapshots().map((snap) {
-      final amount = (snap.data()?['amount'] as num?)?.toDouble() ?? 0.0;
-      _budgetCache[mk] = amount;
-      return amount;
-    }));
+
+    budgetThisMonth.bindStream(
+      docRef.snapshots().map((snap) {
+        final amount = (snap.data()?['amount'] as num?)?.toDouble() ?? 0.0;
+        _budgetCache[mk] = amount;
+        // fire-and-forget local cache write
+        _saveBudgetToCache(mk, amount);
+        return amount;
+      }).handleError((e, _) {
+        if (e is FirebaseException && e.code == 'permission-denied') {
+          log('⚠️ budget stream permission-denied (expected during switch)');
+          return;
+        }
+        final msg = e is FirebaseException ? (e.message ?? e.code) : e.toString();
+        budgetError.value = msg;
+        log('🔥 budget stream error: $msg');
+      }),
+    );
   }
 
   Future<void> _loadBudgetFromCache(String mk) async {
@@ -273,7 +309,11 @@ _expenses = Get.find<ExpensesController>(tag: expensesTag);
     } else {
       // personal budget per user per month
       final uid = FirebaseAuth.instance.currentUser!.uid;
-      return base.collection('budgets_user').doc(uid).collection('months').doc(mk);
+      return base
+          .collection('budgets_user')
+          .doc(uid)
+          .collection('months')
+          .doc(mk);
     }
   }
 }
